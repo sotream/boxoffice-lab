@@ -11,6 +11,8 @@ Setup: MacBook Air M1, Node 22 + Fastify, Postgres 17 in Docker, Redis 7, 200 00
 | rare term: ILIKE | 25 | 1 819.7 | 2 466.8 | 2 600.4 |
 | rare term: FTS (GIN), date order | 2 177 | 21.0 | 36.3 | 47.1 |
 
+Size at 200 000 events: table 63 MB, indexes 24 MB (GIN + city/date b-tree).
+
 ## Reading
 1. **Cache beats the better index** for hot queries: 22x the ranked query, p99 8 ms.
 2. **GIN wins by 87x on selective terms**; for common terms with a city filter and date order the gap is only 1.8x, because ILIKE can stop early via the `(city, starts_at)` index.

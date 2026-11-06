@@ -4,7 +4,11 @@ import Redis from "ioredis";
 import { GatewayService } from "./gateway.service";
 import { RateLimiter } from "./rate-limiter";
 
-const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:56379");
+const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:56379", {
+  // Fail fast when Redis is gone: no offline queue, 200 ms per command, so the gateway can apply its fail-open/closed policy.
+  enableOfflineQueue: false, commandTimeout: 200, maxRetriesPerRequest: 1
+});
+redis.on("error", () => undefined); // reconnection is automatic; errors surface per request
 const svc = new GatewayService(
   {
     inventoryUrl: process.env.INVENTORY_URL ?? "http://localhost:3101",

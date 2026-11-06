@@ -76,4 +76,13 @@ describe("GatewayService", () => {
   it("404 for unknown paths", async () => {
     expect((await make().handle("GET", "/admin", "", undefined, "ip")).status).toBe(404);
   });
+
+  it("limiter store down: public availability fails open, holds fail closed with a fast 503", async () => {
+    const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", secret }, broken, broken, upstream);
+    expect((await g.handle("GET", "/events/1/availability", "", undefined, "ip")).status).toBe(201); // forwarded
+    const t = signAdmission("u", 1, 60, secret);
+    expect((await g.handle("POST", "/events/1/holds", "", "{}", "ip", t)).status).toBe(503);
+    expect((await g.handle("POST", "/events/1/queue/join", "", "{}", "ip")).status).toBe(503);
+  });
 });

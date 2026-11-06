@@ -15,8 +15,11 @@
 - **Redis + Lua**: one atomic round trip, shared clock via `TIME`. A `GET`-then-`SET` from the app would race (tested: 300 concurrent takes on a bucket of 100 allow ~100).
 - Sticky routing + local buckets: fast but uneven and breaks on rebalancing. Rejected.
 
-## Failure mode (fail open or closed?)
-If Redis is down the limiter throws and requests fail (closed). For the sale that is the safe default: admission and the queue need Redis anyway. A public read-only API would fail open with a local fallback limit.
+## Failure mode (decided by a failure drill, see docs/failure-drills.md)
+First version: Redis down meant every request hung until the client timeout (ioredis queues commands while offline) and 100% failed. Now the Redis client fails fast (no offline queue, 200 ms command timeout) and the policy is per route:
+- **public reads (availability): fail open.** Serve without the limiter; a read is cheap and the DB is protected by its own pool.
+- **holds and queue calls: fail closed with an immediate 503 + `Retry-After`.** Holds spend scarce inventory, and the queue itself needs Redis.
+Measured: availability stayed at 0 errors through a 10 s Redis outage; recovery after Redis came back needed no restart.
 
 # ADR 002: signed admission token instead of a Redis lookup
 

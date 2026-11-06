@@ -30,16 +30,23 @@ export class GatewayService {
     const eventId = Number(m[1]);
     const route = m[2];
 
-    if (route.startsWith("queue/")) return this.forward(this.ipLimiter, `ip:${ip}`, this.cfg.queueUrl, path, query, method, body, ip);
-    if (route === "availability") return this.forward(this.ipLimiter, `ip:${ip}`, this.cfg.inventoryUrl, path, query, method, body, ip);
+    if (route.startsWith("queue/")) return this.forward(this.ipLimiter, `ip:${ip}`, this.cfg.queueUrl, path, query, method, body, ip, false);
+    // Public read: if the limiter store is down, serve anyway (fail open). Availability is cheap and cacheable.
+    if (route === "availability") return this.forward(this.ipLimiter, `ip:${ip}`, this.cfg.inventoryUrl, path, query, method, body, ip, true);
 
     const who = admission ? verifyAdmission(admission, eventId, this.cfg.secret) : null;
     if (!who) return { status: 403, body: '{"error":"admission required"}' };
-    return this.forward(this.userLimiter, `user:${who.userId}`, this.cfg.inventoryUrl, path, query, method, body, ip);
+    // Holds spend scarce inventory: fail closed, with a fast 503, if we cannot enforce the limit.
+    return this.forward(this.userLimiter, `user:${who.userId}`, this.cfg.inventoryUrl, path, query, method, body, ip, false);
   }
 
-  private async forward(limiter: RateLimiter, key: string, base: string, path: string, query: string, method: string, body: string | undefined, ip: string): Promise<Reply> {
-    const r = await limiter.take(key);
+  private async forward(limiter: RateLimiter, key: string, base: string, path: string, query: string, method: string, body: string | undefined, ip: string, failOpen: boolean): Promise<Reply> {
+    let r: { allowed: boolean };
+    try { r = await limiter.take(key); }
+    catch {
+      if (!failOpen) return { status: 503, body: '{"error":"limiter unavailable"}', headers: { "retry-after": "1" } };
+      r = { allowed: true };
+    }
     if (!r.allowed) return { status: 429, body: '{"error":"rate limited"}', headers: { "retry-after": "1" } };
     const res = await this.upstream(`${base}${path}${query}`, { method, body, headers: { "content-type": "application/json", "x-forwarded-for": ip } });
     return { status: res.status, body: res.body };
