@@ -11,7 +11,7 @@
   <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white">
   <img alt="NestJS 12" src="https://img.shields.io/badge/NestJS-12-E0234E?logo=nestjs&logoColor=white">
   <img alt="Fastify 5" src="https://img.shields.io/badge/Fastify-5-000000?logo=fastify&logoColor=white">
-  <img alt="PostgreSQL 17" src="https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white">
+  <img alt="PostgreSQL 18" src="https://img.shields.io/badge/PostgreSQL-18-4169E1?logo=postgresql&logoColor=white">
   <img alt="Redis 7" src="https://img.shields.io/badge/Redis-7-FF4438?logo=redis&logoColor=white">
   <img alt="Kafka API (Redpanda)" src="https://img.shields.io/badge/Kafka%20API-Redpanda-231F20?logo=apachekafka&logoColor=white">
   <img alt="k6" src="https://img.shields.io/badge/load%20tests-k6-7D64FF?logo=k6&logoColor=white">
@@ -142,6 +142,7 @@ docker-compose.yml
 ## Limits of this lab
 
 - Everything runs on one MacBook Air M1: server, Postgres, Redis, Redpanda and k6 share the machine, so the numbers are conservative and noisy.
+- Postgres: the compose file, CI and the full test suite run on PostgreSQL 18. The load figures in the `RESULTS.md` files were measured on PostgreSQL 17 (and before the metrics and logging of `@boxoffice/platform` existed) and have not been re-measured; treat the comparison between them as an open item.
 - The figures are per-instance planning numbers for the capacity formulas, not production claims. Re-measure on target hardware.
 - No multi-node setup was tested: no Redis failover, no Postgres replicas, no real network between services.
 - OpenSearch/Elasticsearch was not run; the catalog ADR argues from its documented trade-offs, not from measurements.
