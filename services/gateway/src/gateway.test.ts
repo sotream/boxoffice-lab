@@ -10,10 +10,9 @@ beforeEach(async () => { const k = await redis.keys("rl:*"); if (k.length) await
 
 describe("RateLimiter (token bucket)", () => {
   it("is atomic: 300 concurrent takes on a burst of 100 allow exactly 100", async () => {
-    const rl = new RateLimiter(redis, 1, 100); // refill 1/s is negligible within the test
+    const rl = new RateLimiter(redis, 0.001, 100); // refill is negligible, so the count is exact
     const rs = await Promise.all(Array.from({ length: 300 }, () => rl.take("k")));
-    expect(rs.filter((r) => r.allowed).length).toBeGreaterThanOrEqual(100);
-    expect(rs.filter((r) => r.allowed).length).toBeLessThanOrEqual(101);
+    expect(rs.filter((r) => r.allowed).length).toBe(100);
   });
 
   it("refills over time", async () => {
