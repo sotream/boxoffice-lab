@@ -53,13 +53,15 @@ export const pgCheck = (pool: Pick<Pool, "query">, name = "postgres", critical =
 export const redisCheck = (redis: { ping(): Promise<unknown> }, name = "redis", critical = true): Check => ({ name, critical, run: () => redis.ping() });
 
 /** Reachability of a TCP endpoint (used for the Kafka broker: cheap, no protocol round trip, no consumer-group side effects). */
-export function tcpCheck(hostPort: string, name: string, critical = true): Check {
+export function tcpCheck(hostPort: string, name: string, critical = true, timeoutMs = 1000): Check {
   const i = hostPort.lastIndexOf(":");
   const host = hostPort.slice(0, i), port = Number(hostPort.slice(i + 1));
   return {
     name, critical,
     run: () => new Promise<void>((resolve, reject) => {
       const s = connect({ host, port });
+      // A blackholed address never answers: without this the socket sits in SYN_SENT for minutes, once per readiness evaluation.
+      s.setTimeout(timeoutMs, () => { s.destroy(); reject(new Error(`connect to ${hostPort} timed out after ${timeoutMs} ms`)); });
       s.once("connect", () => { s.destroy(); resolve(); });
       s.once("error", (e) => { s.destroy(); reject(e); });
     })
