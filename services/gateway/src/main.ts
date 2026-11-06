@@ -1,4 +1,3 @@
-import "reflect-metadata";
 import Fastify from "fastify";
 import Redis from "ioredis";
 import { GatewayService } from "./gateway.service";
