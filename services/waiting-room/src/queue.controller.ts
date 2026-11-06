@@ -1,6 +1,8 @@
 import { BadRequestException, Body, Controller, Get, Inject, Param, ParseIntPipe, Post, Query } from "@nestjs/common";
+import { signAdmission } from "@boxoffice/admission";
 import { QueueService } from "./queue.service";
 
+export const ADMISSION_SECRET = process.env.ADMISSION_SECRET ?? "dev-secret";
 export const ADMIT_PER_SECOND = Number(process.env.ADMIT_PER_SECOND ?? 500);
 
 @Controller("events/:eventId/queue")
@@ -14,8 +16,9 @@ export class QueueController {
   }
 
   @Get("status")
-  status(@Param("eventId", ParseIntPipe) eventId: number, @Query("userId") userId: string) {
+  async status(@Param("eventId", ParseIntPipe) eventId: number, @Query("userId") userId: string) {
     if (!userId) throw new BadRequestException("userId required");
-    return this.q.status(eventId, userId, ADMIT_PER_SECOND);
+    const st = await this.q.status(eventId, userId, ADMIT_PER_SECOND);
+    return st.state === "admitted" ? { ...st, token: signAdmission(userId, eventId, st.ttl, ADMISSION_SECRET) } : st;
   }
 }

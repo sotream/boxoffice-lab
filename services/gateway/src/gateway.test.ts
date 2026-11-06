@@ -1,0 +1,79 @@
+import Redis from "ioredis";
+import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { signAdmission } from "@boxoffice/admission";
+import { GatewayService, Upstream } from "./gateway.service";
+import { RateLimiter } from "./rate-limiter";
+
+const redis = new Redis("redis://localhost:56379");
+afterAll(() => redis.quit());
+beforeEach(async () => { const k = await redis.keys("rl:*"); if (k.length) await redis.del(...k); });
+
+describe("RateLimiter (token bucket)", () => {
+  it("is atomic: 300 concurrent takes on a burst of 100 allow exactly 100", async () => {
+    const rl = new RateLimiter(redis, 1, 100); // refill 1/s is negligible within the test
+    const rs = await Promise.all(Array.from({ length: 300 }, () => rl.take("k")));
+    expect(rs.filter((r) => r.allowed).length).toBeGreaterThanOrEqual(100);
+    expect(rs.filter((r) => r.allowed).length).toBeLessThanOrEqual(101);
+  });
+
+  it("refills over time", async () => {
+    const rl = new RateLimiter(redis, 20, 2);
+    expect((await rl.take("t")).allowed).toBe(true);
+    expect((await rl.take("t")).allowed).toBe(true);
+    expect((await rl.take("t")).allowed).toBe(false);
+    await new Promise((r) => setTimeout(r, 120)); // 20 tokens/s x 0.12 s = 2.4 tokens
+    expect((await rl.take("t")).allowed).toBe(true);
+  });
+
+  it("keeps keys independent", async () => {
+    const rl = new RateLimiter(redis, 1, 1);
+    expect((await rl.take("a")).allowed).toBe(true);
+    expect((await rl.take("b")).allowed).toBe(true);
+    expect((await rl.take("a")).allowed).toBe(false);
+  });
+});
+
+describe("GatewayService", () => {
+  const calls: string[] = [];
+  const upstream: Upstream = async (url) => { calls.push(url); return { status: 201, body: "{}" }; };
+  const secret = "s";
+  const make = () => new GatewayService(
+    { inventoryUrl: "http://inv", queueUrl: "http://q", secret },
+    new RateLimiter(redis, 1000, 1000),
+    new RateLimiter(redis, 1, 2),
+    upstream
+  );
+  beforeEach(() => { calls.length = 0; });
+
+  it("rejects holds without admission, never calling upstream", async () => {
+    const r = await make().handle("POST", "/events/1/holds", "", "{}", "1.1.1.1");
+    expect(r.status).toBe(403);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects a token for another event or a forged token", async () => {
+    const g = make();
+    const other = signAdmission("u", 2, 60, secret);
+    expect((await g.handle("POST", "/events/1/holds", "", "{}", "ip", other)).status).toBe(403);
+    expect((await g.handle("POST", "/events/1/holds", "", "{}", "ip", signAdmission("u", 1, 60, "wrong"))).status).toBe(403);
+  });
+
+  it("forwards admitted holds and limits per user (burst 2, then 429)", async () => {
+    const g = make();
+    const t = signAdmission("u", 1, 60, secret);
+    const codes = [];
+    for (let i = 0; i < 4; i++) codes.push((await g.handle("POST", "/events/1/holds", "?strategy=atomic-update", "{}", "ip", t)).status);
+    expect(codes).toEqual([201, 201, 429, 429]);
+    expect(calls[0]).toBe("http://inv/events/1/holds?strategy=atomic-update");
+  });
+
+  it("routes queue calls to the waiting room without admission", async () => {
+    const r = await make().handle("POST", "/events/1/queue/join", "", "{}", "ip");
+    expect(r.status).toBe(201);
+    expect(calls[0]).toBe("http://q/events/1/queue/join");
+  });
+
+  it("404 for unknown paths", async () => {
+    expect((await make().handle("GET", "/admin", "", undefined, "ip")).status).toBe(404);
+  });
+});

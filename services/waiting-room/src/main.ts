@@ -10,6 +10,6 @@ async function bootstrap() {
   const q = app.get(QueueService);
   // Admission tick: every 100 ms release a tenth of the per-second budget.
   setInterval(() => { q.admit(1, Math.max(1, Math.round(ADMIT_PER_SECOND / 10))).catch(() => undefined); }, 100);
-  await app.listen(Number(process.env.PORT ?? 3102), "0.0.0.0");
+  await app.listen({ port: Number(process.env.PORT ?? 3102), host: "0.0.0.0", backlog: 4096 });
 }
 bootstrap();
