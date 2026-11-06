@@ -1,8 +1,8 @@
 # boxoffice-lab
 
-A system-design interview cheat sheet for senior engineers, built as running code. The scenario is a ticket box office with a flash sale: 20 000 seats, 50 000 users, one minute. Six small services (TypeScript, NestJS and Fastify) each answer a classic interview question, and each one carries requirements, a `CAPACITY.md` with formulas, ADRs with the rejected options, and a `RESULTS.md` with k6 measurements.
+A design playbook for workload-driven architecture decisions, built as running code: given a shape of load, which pattern to use and at which number to switch. The reference scenario is a ticket box office with a flash sale: 20 000 seats, 50 000 users, one minute. Six small services (TypeScript, NestJS and Fastify) each prove one pattern, and each one carries requirements, a `CAPACITY.md` with formulas, ADRs with the rejected options, and a `RESULTS.md` with k6 measurements.
 
-It is my own preparation material. It is written for someone who has to say "I would use X because of Y, and here is the number" in a 45-minute interview.
+The layer above the services is the [playbook](docs/playbook/README.md): it maps workload shapes to architectures and trigger numbers, and it separates what was measured here from what is derived on paper or only a design sketch. It is written for someone who has to say "I would use X because of Y, and here is the number".
 
 ## The idea: numbers are derived and measured
 
@@ -14,9 +14,9 @@ Every capacity claim is done twice. First it is derived on paper from a few stat
 
 The admission budget in the second picture is derived as 2 300 x 0.6 / 3 = 460 users/s and configured as 500.
 
-## Interview question, service, decision, number
+## Question, service, decision, number
 
-| Interview question | Service | Key decision | Measured number |
+| Design question | Service | Key decision | Measured number |
 |---|---|---|---|
 | How do you prevent double booking? | [inventory](services/inventory) | [One conditional `UPDATE ... WHERE free`, not check-then-write](services/inventory/adr/001-hold-strategy.md) | ~2 300 hold RPS per instance, p99 37.7 ms; held seats equal successful holds, no oversell |
 | 50 000 people open the page at once | [waiting-room](services/waiting-room) | [Redis sorted set, sequence as score](services/waiting-room/adr/001-redis-sorted-set-queue.md) | ~7 600 RPS per instance, p99 27.8 ms, ~100 B per queued user |
@@ -41,7 +41,7 @@ All use 0.6 as the default utilisation (headroom for GC, deploys, a lost node).
 
 The full list with orders of magnitude is in [docs/numbers-to-know.md](docs/numbers-to-know.md). Code: [packages/capacity/src/index.ts](packages/capacity/src/index.ts).
 
-More material: [docs/interview-template.md](docs/interview-template.md) (how to structure a 45-minute answer) and [docs/failure-drills.md](docs/failure-drills.md) (what breaks and what you say about it).
+More material: [docs/playbook/](docs/playbook/README.md) (workload shapes, scaling ladder, store selection, worked scenarios), [docs/interview-template.md](docs/interview-template.md) (how to structure a 45-minute design discussion) and [docs/failure-drills.md](docs/failure-drills.md) (what breaks and what you say about it).
 
 ## Quick start
 
@@ -84,7 +84,7 @@ services/
 packages/
   capacity/       the estimation formulas as code
   admission/      HMAC admission token shared by waiting-room and gateway
-docs/             numbers-to-know, interview-template, failure-drills, img/
+docs/             playbook/, numbers-to-know, interview-template, failure-drills, img/
 docker-compose.yml
 ```
 
