@@ -12,13 +12,14 @@ async function main() {
     topic: e.str("TOPIC", "payments"),
     groupId: e.str("GROUP_ID", "notifications"),
     concurrency: e.int("CONCURRENCY", 25, { min: 1 }),
+    pgPool: e.int("PG_POOL", 20, { min: 1 }),
     shutdown: shutdownEnv(e)
   }));
   const migrationPool = createPool(1, 0); // migrations: no statement timeout
   await migrate(migrationPool);
   await migrationPool.end();
 
-  const pool = createPool();
+  const pool = createPool(cfg.pgPool);
   registerPoolMetrics(pool, "main");
   const healthPool = createPool(1);
   const latency = cfg.senderLatencyMs;
