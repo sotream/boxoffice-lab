@@ -1,0 +1,5 @@
+{
+  "compilerOptions": { "target": "ES2022", "module": "CommonJS", "moduleResolution": "Node", "outDir": "dist", "rootDir": "src", "strict": true, "skipLibCheck": true, "esModuleInterop": true },
+  "include": ["src"],
+  "exclude": ["src/**/*.test.ts"]
+}
