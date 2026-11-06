@@ -26,10 +26,17 @@ export class InventoryService {
     try {
       await client.query("BEGIN");
       const res = await client.query(
-        `UPDATE seats SET status='held', held_by=$3, hold_until = now() + make_interval(secs => $4)
-         WHERE event_id=$1 AND seat_id = ANY($2)
-           AND (status='free' OR (status='held' AND hold_until < now()))
-         RETURNING hold_until`,
+        // One statement, but the rows are locked in seat_id order first (MATERIALIZED + ORDER BY ... FOR UPDATE).
+        // A bare multi-row UPDATE locks rows in whatever order the plan visits them; a hold and a confirm that get
+        // different plans then deadlock (40P01), see the lock-order test.
+        `WITH locked AS MATERIALIZED (
+           SELECT seat_id FROM seats
+           WHERE event_id=$1 AND seat_id = ANY($2)
+             AND (status='free' OR (status='held' AND hold_until < now()))
+           ORDER BY seat_id FOR UPDATE)
+         UPDATE seats s SET status='held', held_by=$3, hold_until = now() + make_interval(secs => $4)
+         FROM locked WHERE s.event_id=$1 AND s.seat_id = locked.seat_id
+         RETURNING s.hold_until`,
         [eventId, ids, userId, HOLD_SECONDS]
       );
       if (res.rowCount !== ids.length) {
@@ -84,9 +91,14 @@ export class InventoryService {
       await client.query("BEGIN");
       const res = await client.query(
         // Idempotent: a retry after a lost response (timeout) must still succeed, so already-sold-to-this-user counts.
-        `UPDATE seats SET status='sold', hold_until=NULL
-         WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3
-           AND ((status='held' AND hold_until >= now()) OR status='sold')`,
+        // Same lock order as hold (seat_id ascending), so the two can never wait on each other in a cycle.
+        `WITH locked AS MATERIALIZED (
+           SELECT seat_id FROM seats
+           WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3
+             AND ((status='held' AND hold_until >= now()) OR status='sold')
+           ORDER BY seat_id FOR UPDATE)
+         UPDATE seats s SET status='sold', hold_until=NULL
+         FROM locked WHERE s.event_id=$1 AND s.seat_id = locked.seat_id`,
         [eventId, ids, userId]
       );
       // A partial match must not sell the seats that did match while reporting failure to the caller.
