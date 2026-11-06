@@ -39,7 +39,7 @@ Orders of magnitude to remember (folk knowledge, approximate):
 
 ### Measured in this lab (laptop)
 
-All from the linked `RESULTS.md`. Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5 (the gateway is plain Fastify 5), Postgres 17 and Redis 7 in Docker, k6 on the same machine.
+All from the linked `RESULTS.md`. Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5 (the gateway is plain Fastify 5), Postgres 17 and Redis 7 in Docker, k6 on the same machine. These load runs predate the metrics and logging of `@boxoffice/platform` and the move of compose and CI to PostgreSQL 18, and have not been repeated.
 
 | Component and scenario | Result | Source |
 |---|---|---|

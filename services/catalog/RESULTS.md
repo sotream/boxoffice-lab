@@ -1,5 +1,7 @@
 # catalog: measured results
 
+*Measurement status: these figures were measured on PostgreSQL 17, before `@boxoffice/platform` (metrics, JSON logging, trace context, graceful shutdown) existed, and the load runs have not been repeated on PostgreSQL 18 or with the instrumentation. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
+
 Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5, Postgres 17 in Docker, Redis 7, 200 000 synthetic events, pool 20, k6 50 VUs for 15 s. "Common terms" follow a Zipf distribution over 16 genres and 16 cities (a city filter on every query); "rare term" is one event number. Script `load/search.js`, runner `load/run.sh`.
 
 | Scenario | RPS | p50 ms | p95 ms | p99 ms |

@@ -1,5 +1,7 @@
 # payments: capacity
 
+*The measured figures quoted here come from the RESULTS.md of this service, taken before the metrics/logging of `@boxoffice/platform` existed and (where Postgres is involved) on PostgreSQL 17; they have not been re-measured. See the measurement status at the top of [RESULTS.md](RESULTS.md). Payments figures 561 and 904 are marked to-be-remeasured below.*
+
 ## Traffic
 - Flash sale: 20 000 seats sold in 60 s -> 20 000 / 60 = **~333 payments/s**; plan 400/s with retries.
 - Ordinary day: 1M tickets/year = 0.03/s. The system is sized for the spike, not for the average (peak factor > 10 000).

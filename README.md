@@ -19,26 +19,47 @@
 
 <p align="center">
   <a href="docs/playbook/README.md"><b>Playbook</b></a> &middot;
-  <a href="#architecture-and-the-flash-sale">Architecture</a> &middot;
+  <a href="#proof-not-claims">Proof</a> &middot;
   <a href="#question-service-decision-number">Services</a> &middot;
+  <a href="#architecture-and-the-flash-sale">Architecture</a> &middot;
+  <a href="#quick-start">Quick start</a> &middot;
+  <a href="docs/adr-index.md">ADRs</a> &middot;
   <a href="docs/failure-drills.md">Failure drills</a> &middot;
-  <a href="docs/numbers-to-know.md">Numbers to know</a> &middot;
-  <a href="#quick-start">Quick start</a>
+  <a href="docs/operations.md">Operations</a>
 </p>
 
-| 6 services | 5 failure drills | 5 worked scenarios | 4 evidence labels |
-|:---:|:---:|:---:|:---:|
-| inventory, waiting-room, gateway, payments, notifications, catalog | broker, cache, consumer, provider down or slow; DLQ replay | URL shortener, feed, ledger, ingestion, file pipeline (paper designs) | `measured` `derived` `folk` `paper design` |
+
+| 6 services | 14 ADRs | 5 failure drills | 37 mutations, 37 killed | 5 paper designs |
+|:---:|:---:|:---:|:---:|:---:|
+| inventory, waiting-room, gateway, payments, notifications, catalog | [indexed with status](docs/adr-index.md) | broker, cache, consumer, provider down or slow; DLQ replay | [mutation check of the tests](docs/testing.md#mutation-check) | URL shortener, feed, ledger, ingestion, file pipeline |
 
 ## What this is
 
-A design playbook for workload-driven architecture decisions, built as running code: given a shape of load, which pattern to use and at which number to switch. The reference scenario is a ticket box office with a flash sale: 20 000 seats, 50 000 users, one minute. Six small services (TypeScript, NestJS and Fastify) each prove one pattern, and each one carries requirements, a `CAPACITY.md` with formulas, ADRs with the rejected options, and a `RESULTS.md` with k6 measurements.
+A design playbook for workload-driven architecture decisions, built as running code: given a shape of load, which pattern to use and at which number to switch. The reference scenario is a ticket box office with a flash sale: 20 000 seats, 50 000 users, one minute. Six small services (TypeScript, NestJS and Fastify) each prove one pattern. Each carries requirements, a `CAPACITY.md` with formulas, ADRs with the rejected options, a `RESULTS.md` with k6 measurements, and tests that attack the pattern's invariant. A shared package, `@boxoffice/platform`, gives every service the same health endpoints, metrics, JSON logs, trace context, config validation and graceful shutdown.
 
-The layer above the services is the [playbook](docs/playbook/README.md): it maps workload shapes to architectures and trigger numbers, and it separates what was measured here from what is derived on paper or only a design sketch. It is written for someone who has to say "I would use X because of Y, and here is the number".
+The layer above the services is the [playbook](docs/playbook/README.md): it maps workload shapes to architectures and trigger numbers, and it labels every figure as `measured`, `derived`, `folk` or `paper design`. It is written for someone who has to say "I would use X because of Y, and here is the number".
 
-## The idea: numbers are derived and measured
+**In two minutes:** read the table [below](#question-service-decision-number) (question, service, decision, number), look at the [architecture picture](#architecture-and-the-flash-sale), then run `pnpm test` ([quick start](#quick-start)). Every number is either derived on paper from stated assumptions ([`packages/capacity`](packages/capacity/src/index.ts) holds the formulas) or measured by a load script whose raw output is saved in [`docs/load-output/`](docs/load-output/); where they disagree, the disagreement is written down.
 
-Every capacity claim is done twice. First it is derived on paper from a few stated assumptions (`packages/capacity` holds the formulas). Then the service is load-tested and the measured figure is written next to the derived one. Where they disagree, the disagreement is written down, because that is where the lessons are.
+## Proof, not claims
+
+The headline claims are correctness claims, and each has a test that tries to break it. Details and the list of bugs these tests found: [docs/testing.md](docs/testing.md).
+
+| Claim | How it is checked | Run |
+|---|---|---|
+| No seat is held or sold twice; confirm is all-or-nothing | fast-check model-based and concurrent tests against real Postgres (a property test found a `confirm` that sold part of a request while answering false) | `pnpm --filter @boxoffice/inventory test` |
+| Admission is FIFO and nobody is admitted twice | model and happens-before properties against real Redis | `pnpm --filter @boxoffice/waiting-room test` |
+| The rate limiter is exact and atomic across instances | Lua bucket compared with an exact model on a controllable clock; exact count under concurrency; 90-cell policy table for the gateway | `pnpm --filter @boxoffice/gateway test` |
+| Admission tokens cannot be forged or re-spelled | tamper, truncation and canonical-form properties (a property test found malleable signatures) | `pnpm --filter @boxoffice/admission test` |
+| The payments saga never double-charges, double-refunds or loses an event, whatever crashes | crash injected at 8 boundaries, a reusable PSP contract suite, model-based test with random crashes and 1 to 4 concurrent runners; `REFUNDING` is claimed before the refund ([ADR 005](services/payments/adr/005-claim-refund-before-issuing-it.md)) | `pnpm --filter @boxoffice/payments test` |
+| Notifications are delivered at least once with no duplicate effects; poison messages never block a partition | random duplicates, redeliveries and flaky providers; the real consumer against a fake broker | `pnpm --filter @boxoffice/notifications test` |
+| The cache never serves wrong data | TTL jitter bounds, unambiguous keys, input fuzz with no 5xx | `pnpm --filter @boxoffice/catalog test` |
+| The tests themselves catch real breakage | a dependency-free mutation runner breaks the production code one way at a time and requires a named test to fail: 37 mutations in `scripts/mutations.json`, 37 killed on the last run (2026-11-06) | `pnpm test:mutation` (about 6 minutes, edits and restores source files) |
+| The whole pipeline keeps its invariants, including through `kill -9` | `packages/e2e` starts the real built services as processes (private Postgres database, Redis logical DB and Kafka topic), runs a 300-user flash sale, the same sale with `kill -9` of payments and of the notifications consumer, and a limiter-overload storm, then reads the databases: no seat sold twice, sold seats equal confirmed payments, money conserved, one outbox event per payment, no duplicate deliveries, request id present end to end. It found a bug no unit test had: every real event was dead-lettered because the outbox id was a string. Details and limits: [docs/e2e.md](docs/e2e.md) | `pnpm test:e2e` (about 2.5 minutes, needs Redpanda) |
+| The system degrades the way the docs say | five failure drills with raw output saved in [`docs/drill-output/`](docs/drill-output/) | [docs/failure-drills.md](docs/failure-drills.md) |
+| Alert rules and runbooks match the code | `pnpm ops:check` fails if an alert names a metric or label no service defines, or the metric table is stale | `pnpm ops:check` |
+
+Coverage thresholds are set in the `vitest.config.ts` of every package except `packages/e2e` (payments is lower, 77% statements, because its HTTP and metrics layer is exercised by spawned processes that coverage does not see); CI runs `pnpm test:coverage` and `pnpm test:e2e`. The tests are correctness tests on one machine: they do not replace load tests, and they do not prove anything about multi-node behaviour.
 
 <a id="architecture-and-the-flash-sale"></a>
 
@@ -46,20 +67,20 @@ Every capacity claim is done twice. First it is derived on paper from a few stat
 
 ![Flash sale estimation chain](docs/img/flash-sale-math.svg)
 
-The admission budget in the second picture is derived as 2 600 x 0.6 / 3 = 520 users/s (531 from the unrounded 2 654) and configured as 500, deliberately a little below the derived value. The 2 600 is the measured 2 654 hold RPS rounded down; rounded figures like this one are listed in [numbers-to-know](docs/numbers-to-know.md).
+The admission budget in the second picture is derived as 2 600 x 0.6 / 3 = 520 users/s (531 from the unrounded 2 654) and configured as 500, deliberately a little below the derived value. The 2 600 is the measured 2 654 hold RPS rounded down; rounded figures like this one are listed in [numbers-to-know](docs/numbers-to-know.md). The measured figures in both pictures predate the metrics and logging of `@boxoffice/platform` (see [Limits](#limits-of-this-lab)).
 
 ## Question, service, decision, number
 
 | Design question | Service | Key decision | Measured number |
 |---|---|---|---|
 | How do you prevent double booking? | [inventory](services/inventory) | [One conditional `UPDATE ... WHERE free`, not check-then-write](services/inventory/adr/001-hold-strategy.md) | 2 654 hold RPS per instance (planned as 2 600), p99 31.7 ms; held seats equal successful holds, no oversell |
-| 50 000 people open the page at once | [waiting-room](services/waiting-room) | [Redis sorted set, sequence as score](services/waiting-room/adr/001-redis-sorted-set-queue.md) | 10 134 RPS per instance (planned as 10 100), p99 22.3 ms, 100 to 150 B per queued user |
-| Design a rate limiter | [gateway](services/gateway) | [Token bucket in Redis + Lua](services/gateway/adr/001-token-bucket-redis.md), [signed admission token](services/gateway/adr/001-token-bucket-redis.md) | 2 001 RPS through the gateway vs 2 485 direct (about 19% less) |
-| Saga vs 2PC, safe retries, DB write plus event | [payments](services/payments) | [Orchestrated saga, outbox, idempotency key](services/payments/adr/001-saga-over-2pc.md) | 561 payments/s per instance at a 100 ms PSP (904 at 0 ms), Postgres-bound when last profiled (before the upgrade); 15 097 payments = 15 097 outbox rows = 15 097 published, 0 duplicate keys |
+| 50 000 people open the page at once | [waiting-room](services/waiting-room) | [Redis sorted set, sequence as score](services/waiting-room/adr/001-redis-sorted-set-queue.md) | 10 134 RPS per instance (planned as 10 100), p99 22.3 ms, at most 140 B per queued user (planning figure 100 to 150 B) |
+| Design a rate limiter | [gateway](services/gateway) | [Token bucket in Redis + Lua](services/gateway/adr/001-token-bucket-redis.md), [signed admission token](services/gateway/adr/001-token-bucket-redis.md#adr-002-signed-admission-token-instead-of-a-redis-lookup) | 2 001 RPS through the gateway vs 2 485 direct (about 19% less) |
+| Saga vs 2PC, safe retries, DB write plus event | [payments](services/payments) | [Orchestrated saga](services/payments/adr/001-saga-over-2pc.md), [outbox, idempotency key](services/payments/adr/001-saga-over-2pc.md#adr-002-transactional-outbox-not-write-db-then-publish), [refund claimed before it is issued](services/payments/adr/005-claim-refund-before-issuing-it.md) | 561 payments/s per instance at a 100 ms PSP (904 at 0 ms), Postgres-bound; **to be re-measured** (taken before the `REFUNDING` commit existed); 15 097 payments = 15 097 outbox rows = 15 097 published, 0 duplicate keys |
 | Design a notification system | [notifications](services/notifications) | [Kafka log, at-least-once plus dedup key, DLQ](services/notifications/adr/001-kafka-for-notifications.md) | 1 393 deliveries/s on 3 partitions (447 on 1); 38 000 drained in 27.3 s; 0 duplicates |
 | Design search; Postgres FTS vs Elasticsearch | [catalog](services/catalog) | [tsvector + GIN first, cache-aside in front](services/catalog/adr/001-postgres-fts-before-elasticsearch.md) | 10 275 RPS cached (p99 9.0 ms); 536 RPS ranked uncached; GIN about 390x faster than ILIKE on a rare term |
 
-Numbers in this table are per-instance, from one MacBook Air M1 with the load generator on the same machine (see [Limits](#limits-of-this-lab)): planning figures, not production claims.
+Numbers in this table are per-instance, from one MacBook Air M1 with the load generator on the same machine, on PostgreSQL 17 and before the platform instrumentation existed. They are planning figures, not production claims, and they have not been re-measured ([Limits](#limits-of-this-lab)). Every ADR with its status: [docs/adr-index.md](docs/adr-index.md).
 
 ## Capacity formulas
 
@@ -81,30 +102,94 @@ More material: [docs/playbook/](docs/playbook/README.md) (workload shapes, scali
 
 ## Quick start
 
-Requirements: Node 26 (the version the numbers were measured on and CI uses; the services run on NestJS 12 and Fastify 5), pnpm, Docker, [k6](https://k6.io) for the load scripts.
+Requirements: Node 26 (CI and the measurements use it), pnpm, Docker, [k6](https://k6.io) for the load scripts only.
 
 ```bash
-docker compose up -d      # Postgres :55432, Redis :56379, Redpanda :59092
+docker compose up -d      # PostgreSQL 18 :55432, Redis 7 :56379, Redpanda :59092
 pnpm install
-pnpm -r test              # unit and integration tests of all packages
-pnpm build                # compile; the load scripts run the compiled dist/
+pnpm build                # compile every package; services and load scripts run the compiled dist/
+pnpm ops:check            # alert rules, runbooks and metric table agree with the code (no infrastructure needed)
+pnpm test                 # all packages, one after another (they share one Postgres and one Redis)
+pnpm test:e2e             # system-level end-to-end and chaos run, about 2.5 minutes, needs Redpanda (docs/e2e.md)
 ```
 
-Service ports: gateway 3100, inventory 3101, waiting-room 3102, payments 3103, catalog 3104.
+Run the system (one terminal each, after `pnpm build`; ports in the next table):
 
-Load scripts (run from the service directory, after `pnpm build`):
+```bash
+SEED_SEATS=20000 pnpm --filter @boxoffice/inventory start   # (re)creates 20 000 seats for event 1
+pnpm --filter @boxoffice/waiting-room start
+pnpm --filter @boxoffice/gateway start
+pnpm --filter @boxoffice/payments start                     # needs Redpanda
+pnpm --filter @boxoffice/notifications start                # needs Redpanda
+SEED_EVENTS=1000 pnpm --filter @boxoffice/catalog start     # truncates and seeds catalog.events
+```
+
+A purchase through the gateway, then a payment (payments is called directly; the gateway does not route it):
+
+```bash
+curl -s -X POST localhost:3100/events/1/queue/join -H 'content-type: application/json' -d '{"userId":"alice"}'
+curl -s 'localhost:3100/events/1/queue/status?userId=alice'      # {"state":"admitted","ttl":...,"token":"..."} within a moment
+curl -s -X POST localhost:3100/events/1/holds -H 'content-type: application/json' -H "x-admission: $TOKEN" -d '{"seatIds":[1,2],"userId":"alice"}'
+curl -s -X POST localhost:3103/payments -H 'content-type: application/json' -H 'Idempotency-Key: k1' -d '{"eventId":1,"userId":"alice","seatIds":[1,2],"amountCents":5000}'   # CONFIRMED
+curl -s localhost:3100/readyz; curl -s localhost:3101/metrics | head
+```
+
+Optional: `docker compose --profile observability up -d prometheus grafana` starts Prometheus (127.0.0.1:59090, with the alert rules of [`ops/alerts.yml`](ops/alerts.yml)) and Grafana (127.0.0.1:53000) scraping the services on the host; see [docs/operations.md](docs/operations.md).
+
+More: [docs/development.md](docs/development.md) (running one service, drills, load scripts, adding a test, a mutation, a metric or a service) and [docs/testing.md](docs/testing.md).
+
+Load scripts (run from the service directory, after `pnpm build`; each service README lists its variables):
 
 | Service | Command |
 |---|---|
 | inventory | `cd services/inventory && load/run.sh` (starts the service itself and runs both strategies at low and hot contention) |
 | catalog | `cd services/catalog && load/run.sh` (seeds 200 000 events, runs all six scenarios; needs the Redis container name `boxoffice-lab-redis-1`) |
-| waiting-room | start with `node dist/main.js`, then `k6 run services/waiting-room/load/join.js` (`VUS`, `DURATION`, `BASE`) |
-| payments | start with `node dist/main.js`, then `k6 run services/payments/load/pay.js` (`VUS`, `DURATION`, `BASE`) |
+| waiting-room | start with `pnpm --filter @boxoffice/waiting-room start`, then `k6 run services/waiting-room/load/join.js` (`VUS`, `DURATION`, `BASE`) |
+| payments | start with `pnpm --filter @boxoffice/payments start`, then `k6 run services/payments/load/pay.js` (`VUS`, `DURATION`, `BASE`) |
 | gateway overhead | start inventory (3101) and gateway (3100), then `BASE=http://localhost:3101 k6 run services/gateway/load/overhead.js` and again with `BASE=http://localhost:3100` |
 | gateway flash sale | start inventory with `SEED_SEATS=5000`, waiting-room, gateway, then `k6 run services/gateway/load/flash-sale.js` (`USERS`, `SEATS`, `BASE`, `ARRIVAL_SPREAD_S`, default 3) |
 | notifications | `cd services/notifications && node load/bench.js` (needs postgres and redpanda up) |
 
-The environment variables a service reads are in its `src/main.ts`; the gateway README also documents `TRUST_PROXY`.
+Load scripts and drills write to the shared databases and stop containers: do not run them at the same time as the tests ([development.md](docs/development.md#troubleshooting-shared-database-races)).
+
+## Ports and endpoints
+
+| Service | Port | Business endpoints | Ops endpoints |
+|---|---|---|---|
+| gateway | 3100 | `/events/:id/queue/join`, `/events/:id/queue/status`, `/events/:id/availability`, `/events/:id/holds`, `/events/:id/confirm` | `/healthz` `/readyz` `/metrics` |
+| inventory | 3101 | `POST /events/:id/holds`, `POST /events/:id/confirm`, `GET /events/:id/availability` | same |
+| waiting-room | 3102 | `POST /events/:id/queue/join`, `GET /events/:id/queue/status` | same |
+| payments | 3103 | `POST /payments` (header `Idempotency-Key`), `POST /admin/psp` (only with `PSP_ADMIN=1`) | same |
+| catalog | 3104 | `GET /search`, `GET /events/:id` | same |
+| notifications | 3105 (`OPS_PORT`) | none: Kafka consumer | `/healthz` `/readyz` `/metrics` only |
+| Postgres / Redis / Redpanda | 55432 / 56379 / 59092 | | |
+| Prometheus / Grafana (profile `observability`) | 59090 / 53000, bound to 127.0.0.1 | | |
+
+`/healthz` is liveness (never touches a dependency), `/readyz` is readiness (503 with a per-dependency body, or `shutting_down`), `/metrics` is Prometheus text. Details, SLOs, alerts and runbooks: [docs/operations.md](docs/operations.md). Request and response shapes: the "Endpoints" section of each service README.
+
+## Environment variables
+
+Each service validates its environment at start and exits with code 78 and one message listing every problem. With `NODE_ENV=production`, `ADMISSION_SECRET` must be set and must not be `dev-secret` (gateway and waiting-room refuse to start otherwise). Per-service tables with defaults are in each service README; the main ones:
+
+| Variable | Used by | Default |
+|---|---|---|
+| `PORT` | gateway, inventory, waiting-room, payments, catalog | 3100, 3101, 3102, 3103, 3104 |
+| `OPS_PORT` | notifications | 3105 |
+| `DATABASE_URL` | inventory, payments, catalog, notifications (via `@boxoffice/platform`) | `postgres://lab:lab@localhost:55432/lab` |
+| `PG_POOL` | inventory, payments, catalog | 20 |
+| `REDIS_URL` | gateway, waiting-room, catalog | `redis://localhost:56379` |
+| `KAFKA_BROKER` | payments, notifications | `localhost:59092` |
+| `INVENTORY_URL`, `QUEUE_URL` | gateway (both), payments (`INVENTORY_URL`) | `http://localhost:3101`, `http://localhost:3102` |
+| `ADMISSION_SECRET` | gateway, waiting-room (must match) | `dev-secret` (refused in production) |
+| `TRUST_PROXY` | gateway | empty: `x-forwarded-for` from clients is ignored; set the load balancer's addresses or CIDRs to use it |
+| `IP_RATE` `IP_BURST` `USER_RATE` `USER_BURST` `UPSTREAM_TIMEOUT_MS` | gateway | 50, 100, 5, 10, 2000 |
+| `ADMIT_PER_SECOND` | waiting-room | 500 |
+| `PSP_LATENCY_MS` `PSP_FAIL_RATE` `PSP_TIMEOUT_MS` `CONFIRM_TIMEOUT_MS` `PSP_ADMIN` | payments | 100, 0, 2000, 2000, off |
+| `CACHE_TTL` (seconds) | catalog | 30 |
+| `SEED_SEATS`, `SEED_EVENTS` | inventory, catalog (seed at start, destructive for those tables) | 0 |
+| `TOPIC` `GROUP_ID` `CONCURRENCY` `SENDER_LATENCY_MS` | notifications | `payments`, `notifications`, 25, 20 |
+| `SHUTDOWN_DEADLINE_MS` `SHUTDOWN_DRAIN_DELAY_MS` | all services | 10000, 0 |
+| `LOG_LEVEL` | all services | `info`, `silent` under tests |
 
 ## Repository layout
 
@@ -113,16 +198,32 @@ services/
   inventory/      seat holds, confirm, availability (Postgres)
   waiting-room/   virtual queue (Redis)
   gateway/        rate limiter and admission-token check (Fastify, Redis)
-  payments/       saga, idempotency, outbox relay (Postgres, Kafka)
+  payments/       saga, idempotency, outbox relay, sweeper (Postgres, Kafka)
   notifications/  consumer, dedup, retries, DLQ (Kafka, Postgres)
   catalog/        search, cache-aside (Postgres FTS, Redis)
-  each with: README.md, CAPACITY.md, RESULTS.md, adr/, load/
+  each with: README.md, CAPACITY.md, RESULTS.md, adr/, load/ (and migrations/)
 packages/
-  capacity/       the estimation formulas as code
+  platform/       shared: pool, JSON logger, trace context, metrics, health, shutdown, config validation
+  capacity/       the estimation formulas as code and a CLI
   admission/      HMAC admission token shared by waiting-room and gateway
-docs/             playbook/, numbers-to-know, interview-template, failure-drills, img/
-docker-compose.yml
+ops/              prometheus.yml, alerts.yml, grafana/, check.mjs (consistency check), overhead.mjs
+scripts/          mutation-check.mjs, mutations.json
+drills/           failure drills (node scripts)
+docs/             playbook/, adr-index, operations, testing, development, failure-drills,
+                  numbers-to-know, interview-template, img/, drill-output/, load-output/
+docker-compose.yml, .github/workflows/ci.yml
 ```
+
+CI (`.github/workflows/ci.yml`): Postgres 18 and Redis 7 as service containers, Redpanda started by hand, then `pnpm build`, `pnpm ops:check` and `pnpm test:coverage` (packages in sequence). A separate `automerge` job squash-merges Dependabot patch and minor PRs after the tests pass; majors are merged by hand.
+
+## How to read this repo
+
+1. [Playbook](docs/playbook/README.md): workload shape, what breaks first, pattern, trigger number, with an evidence label on every figure.
+2. A service README: [inventory](services/inventory/README.md) is the shortest path to a full example.
+3. Its ADRs ([index](docs/adr-index.md)): the options that were rejected and why.
+4. Its `CAPACITY.md`: the derivation of the numbers from stated assumptions.
+5. Its `RESULTS.md`: the measurement, with the setup and the disagreements with the derivation.
+6. Then the proof ([testing](docs/testing.md), [failure drills](docs/failure-drills.md)) and the operation ([operations](docs/operations.md)).
 
 ## Lessons the measurements taught
 
@@ -142,9 +243,12 @@ docker-compose.yml
 ## Limits of this lab
 
 - Everything runs on one MacBook Air M1: server, Postgres, Redis, Redpanda and k6 share the machine, so the numbers are conservative and noisy.
-- Postgres: the compose file, CI and the full test suite run on PostgreSQL 18. The load figures in the `RESULTS.md` files were measured on PostgreSQL 17 (and before the metrics and logging of `@boxoffice/platform` existed) and have not been re-measured; treat the comparison between them as an open item.
+- Postgres: the compose file, CI and the full test suite run on PostgreSQL 18. The load figures in the `RESULTS.md` files and `CAPACITY.md` files were measured on PostgreSQL 17, before the metrics and logging of `@boxoffice/platform` existed, and have not been re-measured; each of those files says so at the top. The comparison between versions is an open item. The only measured cost of the instrumentation is a micro-benchmark on a route that does no work, 15 to 25% of throughput ([operations.md](docs/operations.md#overhead)); no service-level load run was repeated with it.
+- Payments: the 561 and 904 payments/s figures were taken on the compensation path before the `REFUNDING` claim added a commit to it (ADR 005); they are marked to-be-remeasured in [payments CAPACITY](services/payments/CAPACITY.md).
 - The figures are per-instance planning numbers for the capacity formulas, not production claims. Re-measure on target hardware.
+- The SLO targets and alert thresholds in [operations.md](docs/operations.md) are proposals, not calibrated against production traffic. There is no tracing backend: trace ids are propagated and logged, spans are not exported.
+- The mutation check covers inventory, waiting-room, gateway, admission, capacity, catalog and notifications; it refuses to mutate payments and `packages/platform`.
 - No multi-node setup was tested: no Redis failover, no Postgres replicas, no real network between services.
 - OpenSearch/Elasticsearch was not run; the catalog ADR argues from its documented trade-offs, not from measurements.
 - The gateway is plain Fastify standing in for Envoy or Kong; the PSP and email providers are fakes with fixed latency.
-- Admission is a fixed budget, not adaptive to inventory latency.
+- Admission is a fixed budget, not adaptive to inventory latency, and the admission tick serves event 1 only.

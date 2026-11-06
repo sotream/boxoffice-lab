@@ -12,10 +12,11 @@ The headline claims of this repository are correctness claims: no oversell, atom
 | Policy tables | every combination of route x token state x dependency state gives the documented status | `services/gateway/src/policy.test.ts` | milliseconds (fakes) |
 | Contract and fuzz at the HTTP edge | hostile input never gives a 5xx; cache keys are unambiguous | `services/catalog/src/properties.test.ts`, `services/waiting-room/src/http.test.ts` | seconds |
 | Failure-injection with a fake broker | dead-letter routing and partition progress of the real `consumer.ts` | `services/notifications/src/properties.test.ts` | seconds, no Kafka |
+| End-to-end with crashes | the invariants across gateway, inventory, payments, outbox, Kafka and notifications, including `kill -9` of payments and of the consumer | `packages/e2e` ([docs/e2e.md](e2e.md)) | about 2.5 minutes, needs Redpanda |
 | Mutation check | the tests above fail when the production code is deliberately broken | `scripts/mutation-check.mjs` | about 6 minutes |
 | Load tests and failure drills | numbers and behaviour under load (k6, `drills/`) | `services/*/load`, `docs/failure-drills.md` | minutes, manual |
 
-Payments is covered in its own section below: its saga is proven with a PSP contract suite, deterministic race tests, a crash at each of 8 fault points, and a fast-check model test over random interleavings (`services/payments/src/psp.contract.ts`, `saga.races.ts`, `saga.property.ts`; ADR 005). Invariants asserted: one terminal state per payment; exactly one outbox event and never both confirmed and refunded; charged minus refunded cents equals the sum of CONFIRMED amounts; at most one effective refund per charge. `SAGA_RUNS=300` raises the number of generated scenarios. The mutation runner does not cover payments yet (it refuses payments files); the payments tests were mutation-checked by hand while they were written, and those breaks are not reproducible from this repository.
+Payments is covered in its own section below: its saga is proven with a PSP contract suite, deterministic race tests, a crash at each of 8 fault points, and a fast-check model test over random interleavings (`services/payments/src/psp.contract.ts`, `saga.races.ts`, `saga.property.ts`; ADR 005). Invariants asserted: one terminal state per payment; exactly one outbox event and never both confirmed and refunded; charged minus refunded cents equals the sum of CONFIRMED amounts; at most one effective refund per charge. `SAGA_RUNS=300` raises the number of generated scenarios. The mutation runner covers the payments saga, outbox relay and trace storage (`pay-*` ids below).
 
 ## What each invariant proves
 
@@ -64,7 +65,7 @@ node scripts/mutation-check.mjs --only inv-confirm-expiry,adm-expiry
 node scripts/mutation-check.mjs --list
 ```
 
-It refuses to mutate payments, `packages/platform`, `main.ts`, `db.ts`, `app.module.ts`, gateway `app.ts`, tests and package.json files.
+It refuses to mutate `packages/platform`, `main.ts`, `db.ts`, `app.module.ts`, gateway `app.ts`, tests and package.json files. The system-level breaks of the end-to-end suite have their own runner, `packages/e2e/mutation-check.mjs` (7 breaks, see docs/e2e.md).
 
 ### Result
 
@@ -121,6 +122,9 @@ Each was found by a property, fixed minimally, and has a regression test.
 | catalog 500 on NUL byte and on huge event ids | `q=%00`; `/events/99999999999999999999` | 400 for NUL, 404 beyond int4 |
 | notifications consumer: valid JSON that is not an event blocks the partition | message `null` (or an object without `outboxId`) threw a TypeError, not a `DeadLetter`, so the batch failed and was redelivered forever | `parseEvent` shape check; invalid shapes go to the DLQ |
 | admission token malleability | an upper-case or `00`-suffixed signature verified for the same body (Node's hex decoder is lenient), so one token had many valid spellings | signature must be exactly 64 lowercase hex characters; event and expiry fields must be plain digits |
+| inventory `hold` and `confirm` deadlocked under different plans (found as a rare failure of the model-based test after a heavy run, then reproduced) | a bare multi-row `UPDATE` locks rows in plan order; with the confirming connections forced off indexes, 7 of ~4 800 statements failed with `40P01` | both statements lock their rows first in `seat_id` order inside the same statement; `lockorder.test.ts` forces different plans and fails on the old statements |
+| payments outbox relay, found by the end-to-end suite | every real event reached notifications as `outboxId` `"12"` (pg returns bigserial as text) and was dead-lettered; unit tests built events with numbers by hand | relay sends `Number(id)`; regression test in `payments.test.ts` |
+| gateway forwarded a body whose `userId` differed from the admission token (noted by the end-to-end suite, not asserted by it) | an admitted user could hold or confirm seats as another user | the gateway answers 403 unless the body `userId` equals the token's user, 400 for a body that is not JSON; test in `gateway.test.ts` |
 
 ## Known limits
 

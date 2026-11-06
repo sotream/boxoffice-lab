@@ -18,6 +18,8 @@
 
 # ADR 002: cache-aside in Redis with single-flight and TTL jitter
 
+**Status:** accepted.
+
 - **Cache-aside** over write-through: the data changes rarely and a miss is cheap to repair; write-through would couple the catalog writer to every cached search shape.
 - **Single-flight**: 100 concurrent misses for one key run one query (tested). It is per process, so the worst case is instances x 1 query per key instead of requests x 1.
 - **TTL jitter**: prevents a cohort of keys from expiring together (a synchronised miss wave).

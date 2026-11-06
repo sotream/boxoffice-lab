@@ -1,5 +1,7 @@
 # inventory: capacity
 
+*The measured figures quoted here come from the RESULTS.md of this service, taken before the metrics/logging of `@boxoffice/platform` existed and (where Postgres is involved) on PostgreSQL 17; they have not been re-measured. See the measurement status at the top of [RESULTS.md](RESULTS.md).*
+
 Formulas live in `packages/capacity`. Assumptions are stated so you can change them.
 
 ## Traffic (flash sale, the worst case)

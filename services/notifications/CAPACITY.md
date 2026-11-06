@@ -1,5 +1,7 @@
 # notifications: capacity
 
+*The measured figures quoted here come from the RESULTS.md of this service, taken before the metrics/logging of `@boxoffice/platform` existed and (where Postgres is involved) on PostgreSQL 17; they have not been re-measured. See the measurement status at the top of [RESULTS.md](RESULTS.md).*
+
 ## Load
 - One flash sale: 20 000 confirmed payments -> 90% x 2 channels + 10% x 1 = **38 000 deliveries**. Delivery is asynchronous, so what matters is *time to drain*, not RPS.
 - Target: everyone notified within ~60 s of the sale. Required rate = 38 000 / 60 = **~630 deliveries/s**.
