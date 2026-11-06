@@ -61,7 +61,7 @@ describe("GatewayService", () => {
     const g = make();
     const t = signAdmission("u", 1, 60, secret);
     const codes = [];
-    for (let i = 0; i < 4; i++) codes.push((await g.handle("POST", "/events/1/holds", "?strategy=atomic-update", "{}", "ip", t)).status);
+    for (let i = 0; i < 4; i++) codes.push((await g.handle("POST", "/events/1/holds", "?strategy=atomic-update", '{"userId":"u"}', "ip", t)).status);
     expect(codes).toEqual([201, 201, 429, 429]);
     expect(calls[0]).toBe("http://inv/events/1/holds?strategy=atomic-update");
   });
@@ -82,12 +82,23 @@ describe("GatewayService", () => {
     expect((await make().handle("GET", "/admin", "", undefined, "ip")).status).toBe(404);
   });
 
+  it("an admitted user cannot hold or confirm seats as somebody else", async () => {
+    const g = make();
+    const t = signAdmission("u", 1, 60, secret);
+    for (const route of ["holds", "confirm"]) {
+      expect((await g.handle("POST", `/events/1/${route}`, "", '{"userId":"victim","seatIds":[1]}', "ip", t)).status).toBe(403);
+      expect((await g.handle("POST", `/events/1/${route}`, "", '{"seatIds":[1]}', "ip", t)).status).toBe(403); // no userId at all
+      expect((await g.handle("POST", `/events/1/${route}`, "", '{"userId":["u"]}', "ip", t)).status).toBe(403);
+      expect((await g.handle("POST", `/events/1/${route}`, "", "not json", "ip", t)).status).toBe(400);
+    }
+  });
+
   it("limiter store down: public availability fails open, holds fail closed with a fast 503", async () => {
     const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
     const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", secret }, broken, broken, upstream);
     expect((await g.handle("GET", "/events/1/availability", "", undefined, "ip")).status).toBe(201); // forwarded
     const t = signAdmission("u", 1, 60, secret);
-    expect((await g.handle("POST", "/events/1/holds", "", "{}", "ip", t)).status).toBe(503);
+    expect((await g.handle("POST", "/events/1/holds", "", '{"userId":"u"}', "ip", t)).status).toBe(503);
     expect((await g.handle("POST", "/events/1/queue/join", "", "{}", "ip")).status).toBe(503);
   });
 });

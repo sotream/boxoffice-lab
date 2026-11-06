@@ -80,7 +80,7 @@ describe("gateway business metrics", () => {
     await make(limiter(true), limiter(true)).handle("GET", "/events/1/availability", "", undefined, "i");
     await make(limiter(false), limiter(true)).handle("GET", "/events/1/availability", "", undefined, "i");
     await make(limiter("throw"), limiter(true)).handle("GET", "/events/1/availability", "", undefined, "i");
-    await make(limiter(true), limiter("throw")).handle("POST", "/events/1/holds", "", "{}", "i", t);
+    await make(limiter(true), limiter("throw")).handle("POST", "/events/1/holds", "", '{"userId":"u"}', "i", t);
     expect(await d("ip", "allowed")).toBe(before.a + 1);
     expect(await d("ip", "limited")).toBe(before.l + 1);
     expect(await d("ip", "fail_open")).toBe(before.fo + 1);
