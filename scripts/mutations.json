@@ -1,0 +1,437 @@
+[
+  {
+    "id": "inv-hold-expiry-atomic",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "(status='free' OR (status='held' AND hold_until < now()))\n         RETURNING hold_until",
+    "replace": "status='free'\n         RETURNING hold_until",
+    "expectFailingTests": [
+      "expired holds become free again",
+      "model-based"
+    ],
+    "description": "atomic hold no longer takes over expired holds"
+  },
+  {
+    "id": "inv-hold-expiry-forupdate",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "(status='free' OR (status='held' AND hold_until < now()))\n         ORDER BY seat_id FOR UPDATE",
+    "replace": "status='free'\n         ORDER BY seat_id FOR UPDATE",
+    "expectFailingTests": [
+      "model-based"
+    ],
+    "description": "for-update hold no longer takes over expired holds"
+  },
+  {
+    "id": "inv-hold-allornothing",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "if (res.rowCount !== ids.length) {\n        await client.query(\"ROLLBACK\");\n        return { ok: false",
+    "replace": "if (res.rowCount === 0) {\n        await client.query(\"ROLLBACK\");\n        return { ok: false",
+    "expectFailingTests": [
+      "is all-or-nothing for multi-seat holds",
+      "model-based"
+    ],
+    "description": "atomic hold accepts a partial match (drops the all-or-nothing rowCount check)"
+  },
+  {
+    "id": "inv-forupdate-allornothing",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "if (rows.rowCount !== ids.length) {",
+    "replace": "if (rows.rowCount === 0) {",
+    "expectFailingTests": [
+      "model-based"
+    ],
+    "description": "for-update hold accepts a partial match"
+  },
+  {
+    "id": "inv-forupdate-orderby",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "ORDER BY seat_id FOR UPDATE",
+    "replace": "FOR UPDATE",
+    "expectFailingTests": [
+      "lock ordering contract"
+    ],
+    "description": "for-update select without ORDER BY (lock order left to the planner)"
+  },
+  {
+    "id": "inv-confirm-allornothing",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "if (res.rowCount !== ids.length) {\n        await client.query(\"ROLLBACK\");\n        return false;",
+    "replace": "if (res.rowCount === 0) {\n        await client.query(\"ROLLBACK\");\n        return false;",
+    "expectFailingTests": [
+      "confirm is all-or-nothing",
+      "model-based"
+    ],
+    "description": "confirm sells a partial match"
+  },
+  {
+    "id": "inv-confirm-expiry",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "AND ((status='held' AND hold_until >= now()) OR status='sold')",
+    "replace": "AND (status='held' OR status='sold')",
+    "expectFailingTests": [
+      "only the holder can confirm, and not after expiry",
+      "model-based"
+    ],
+    "description": "confirm ignores hold expiry"
+  },
+  {
+    "id": "inv-confirm-owner",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3",
+    "replace": "WHERE event_id=$1 AND seat_id = ANY($2) AND $3::text IS NOT NULL",
+    "expectFailingTests": [
+      "only the holder can confirm",
+      "model-based"
+    ],
+    "description": "anybody can confirm anybody's hold"
+  },
+  {
+    "id": "wr-zadd-nx",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/queue.service.ts",
+    "find": "\"NX\", seq, userId",
+    "replace": "seq, userId",
+    "expectFailingTests": [
+      "re-join is idempotent",
+      "queue model"
+    ],
+    "description": "re-join moves a user to the back of the queue"
+  },
+  {
+    "id": "wr-pop-order",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/queue.service.ts",
+    "find": "zpopmin",
+    "replace": "zpopmax",
+    "expectFailingTests": [
+      "FIFO",
+      "queue model"
+    ],
+    "description": "admits the newest instead of the oldest"
+  },
+  {
+    "id": "wr-admit-budget",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/queue.service.ts",
+    "find": "zpopmin(this.qKey(eventId), n)",
+    "replace": "zpopmin(this.qKey(eventId), n + 1)",
+    "expectFailingTests": [
+      "admits at most n",
+      "queue model"
+    ],
+    "description": "admits one more than the budget"
+  },
+  {
+    "id": "wr-admit-ttl",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/queue.service.ts",
+    "find": "\"1\", \"EX\", ADMIT_TTL_SECONDS",
+    "replace": "\"1\"",
+    "expectFailingTests": [
+      "status moves from waiting to admitted",
+      "queue model"
+    ],
+    "description": "admitted keys never expire (and status misreads them)"
+  },
+  {
+    "id": "wr-join-admitted",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/queue.service.ts",
+    "find": "if (await this.redis.exists(this.aKey(eventId, userId))) {",
+    "replace": "if (false) {",
+    "expectFailingTests": [
+      "admitted user who re-joins",
+      "queue model"
+    ],
+    "description": "an admitted user who re-joins is queued again"
+  },
+  {
+    "id": "wr-seq-clock",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/queue.service.ts",
+    "find": "await this.redis.incr(`wr:${eventId}:seq`)",
+    "replace": "Date.now()",
+    "expectFailingTests": [
+      "happens-before",
+      "queue model",
+      "FIFO"
+    ],
+    "description": "ordering by wall clock instead of a sequence: ties reorder users"
+  },
+  {
+    "id": "gw-bucket-cap",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/rate-limiter.ts",
+    "find": "tokens = math.min(burst, tokens + (now - ts) * rate / 1000)",
+    "replace": "tokens = tokens + (now - ts) * rate / 1000",
+    "expectFailingTests": [
+      "token bucket vs exact model",
+      "idle key refills"
+    ],
+    "description": "bucket refills without a burst cap"
+  },
+  {
+    "id": "gw-bucket-state",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/rate-limiter.ts",
+    "find": "'tokens', tokens,",
+    "replace": "'tokens', burst,",
+    "expectFailingTests": [
+      "token bucket",
+      "atomic"
+    ],
+    "description": "consumed tokens are never persisted: no limiting at all"
+  },
+  {
+    "id": "gw-bucket-cost",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/rate-limiter.ts",
+    "find": "if tokens >= cost then",
+    "replace": "if tokens > cost then",
+    "expectFailingTests": [
+      "token bucket vs exact model",
+      "negligible refill"
+    ],
+    "description": "off-by-one: the last token is never usable"
+  },
+  {
+    "id": "gw-verify-skip",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "if (!who) {",
+    "replace": "if (false) {",
+    "expectFailingTests": [
+      "policy",
+      "rejects"
+    ],
+    "description": "admission token not enforced on holds/confirm"
+  },
+  {
+    "id": "gw-fail-flip",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "if (!failOpen) {",
+    "replace": "if (failOpen) {",
+    "expectFailingTests": [
+      "limiter down",
+      "policy"
+    ],
+    "description": "fail-open and fail-closed swapped"
+  },
+  {
+    "id": "gw-user-key",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "`user:${who.userId}`",
+    "replace": "`user:${ip}`",
+    "expectFailingTests": [
+      "per-user keys"
+    ],
+    "description": "per-user limit keyed by IP instead of user"
+  },
+  {
+    "id": "adm-expiry",
+    "package": "@boxoffice/admission",
+    "file": "packages/admission/src/index.ts",
+    "find": "|| Number(expStr) < now",
+    "replace": "",
+    "expectFailingTests": [
+      "expired tokens",
+      "round trip",
+      "expired"
+    ],
+    "description": "expired admission tokens are accepted"
+  },
+  {
+    "id": "adm-event",
+    "package": "@boxoffice/admission",
+    "file": "packages/admission/src/index.ts",
+    "find": "Number(evStr) !== eventId ||",
+    "replace": "",
+    "expectFailingTests": [
+      "another event"
+    ],
+    "description": "a token for event X works on event Y"
+  },
+  {
+    "id": "adm-sig-skip",
+    "package": "@boxoffice/admission",
+    "file": "packages/admission/src/index.ts",
+    "find": "!timingSafeEqual(a, b)",
+    "replace": "false",
+    "expectFailingTests": [
+      "equal-length wrong signatures",
+      "tamper"
+    ],
+    "description": "signature never compared"
+  },
+  {
+    "id": "adm-hex-canonical",
+    "package": "@boxoffice/admission",
+    "file": "packages/admission/src/index.ts",
+    "find": "!/^[0-9a-f]{64}$/.test(sig) || ",
+    "replace": "",
+    "expectFailingTests": [
+      "single-character tamper",
+      "exhaustive"
+    ],
+    "description": "non-canonical signature encodings accepted"
+  },
+  {
+    "id": "cap-instances-ceil",
+    "package": "@boxoffice/capacity",
+    "file": "packages/capacity/src/index.ts",
+    "find": "return Math.ceil(peak / (perInstanceRps * utilisation));",
+    "replace": "return peak / (perInstanceRps * utilisation);",
+    "expectFailingTests": [
+      "ceil with headroom"
+    ],
+    "description": "instances not rounded up"
+  },
+  {
+    "id": "cap-shards-ceil",
+    "package": "@boxoffice/capacity",
+    "file": "packages/capacity/src/index.ts",
+    "find": "return Math.ceil(peakWritesPerSec / (writesPerShard * utilisation));",
+    "replace": "return Math.floor(peakWritesPerSec / (writesPerShard * utilisation));",
+    "expectFailingTests": [
+      "shardsNeeded"
+    ],
+    "description": "shards rounded down (under-provisioning)"
+  },
+  {
+    "id": "cap-parse-zero",
+    "package": "@boxoffice/capacity",
+    "file": "packages/capacity/src/cli.ts",
+    "find": "Number.isFinite(v) && v > 0 ? v",
+    "replace": "Number.isFinite(v) ? v",
+    "expectFailingTests": [
+      "bad input",
+      "parseNumber"
+    ],
+    "description": "zero accepted as a positive number"
+  },
+  {
+    "id": "cat-jitter",
+    "package": "@boxoffice/catalog",
+    "file": "services/catalog/src/cache.ts",
+    "find": "0.8 + Math.random() * 0.4",
+    "replace": "0.5 + Math.random()",
+    "expectFailingTests": [
+      "jitter stays within"
+    ],
+    "description": "TTL jitter widens to +-50%"
+  },
+  {
+    "id": "cat-singleflight",
+    "package": "@boxoffice/catalog",
+    "file": "services/catalog/src/cache.ts",
+    "find": "const running = this.inflight.get(key);",
+    "replace": "const running = undefined as Promise<unknown> | undefined;",
+    "expectFailingTests": [
+      "single-flight",
+      "thundering herd"
+    ],
+    "description": "concurrent misses each hit the database"
+  },
+  {
+    "id": "cat-ttl-written",
+    "package": "@boxoffice/catalog",
+    "file": "services/catalog/src/cache.ts",
+    "find": "\"EX\", this.ttlWithJitter()",
+    "replace": "\"EX\", 100000",
+    "expectFailingTests": [
+      "TTL really written"
+    ],
+    "description": "entries live ~28 hours (unbounded staleness)"
+  },
+  {
+    "id": "cat-key-collision",
+    "package": "@boxoffice/catalog",
+    "file": "services/catalog/src/catalog.controller.ts",
+    "find": "JSON.stringify([s, c ?? null, q.toLowerCase()])",
+    "replace": "[s, c ?? null, q.toLowerCase()].join(\":\")",
+    "expectFailingTests": [
+      "different parameter tuples",
+      "regression: city"
+    ],
+    "description": "ambiguous cache key: different queries share an entry"
+  },
+  {
+    "id": "cat-nul-guard",
+    "package": "@boxoffice/catalog",
+    "file": "services/catalog/src/catalog.controller.ts",
+    "find": "q.includes(\"\\u0000\") || city?.includes(\"\\u0000\")",
+    "replace": "false",
+    "expectFailingTests": [
+      "never a 5xx",
+      "raw percent-encoded",
+      "hostile"
+    ],
+    "description": "NUL byte reaches Postgres (500)"
+  },
+  {
+    "id": "not-dedup",
+    "package": "@boxoffice/notifications",
+    "file": "services/notifications/src/handler.ts",
+    "find": "WHERE notifications.deliveries.status = 'FAILED'\n            OR (notifications.deliveries.status = 'SENDING' AND notifications.deliveries.updated_at < now() - make_interval(secs => $3))",
+    "replace": "WHERE $3::float8 >= 0",
+    "expectFailingTests": [
+      "dedup",
+      "delivered effects"
+    ],
+    "description": "already SENT deliveries are claimed and sent again"
+  },
+  {
+    "id": "not-retry-budget",
+    "package": "@boxoffice/notifications",
+    "file": "services/notifications/src/handler.ts",
+    "find": "if (attempt >= max) throw err;",
+    "replace": "if (attempt > max) throw err;",
+    "expectFailingTests": [
+      "documented retry budget",
+      "retries"
+    ],
+    "description": "one extra provider attempt per delivery"
+  },
+  {
+    "id": "not-lease",
+    "package": "@boxoffice/notifications",
+    "file": "services/notifications/src/handler.ts",
+    "find": "updated_at < now() - make_interval(secs => $3)",
+    "replace": "updated_at < now() + make_interval(secs => $3)",
+    "expectFailingTests": [
+      "fresh lease"
+    ],
+    "description": "a live worker's lease is stolen"
+  },
+  {
+    "id": "not-dlq-route",
+    "package": "@boxoffice/notifications",
+    "file": "services/notifications/src/consumer.ts",
+    "find": "err instanceof DeadLetter || err instanceof SyntaxError",
+    "replace": "err instanceof SyntaxError",
+    "expectFailingTests": [
+      "poison message is published"
+    ],
+    "description": "dead letters fail the batch instead of going to the DLQ"
+  },
+  {
+    "id": "not-event-shape",
+    "package": "@boxoffice/notifications",
+    "file": "services/notifications/src/consumer.ts",
+    "find": "typeof e !== \"object\" || e === null || ",
+    "replace": "",
+    "expectFailingTests": [
+      "regression: valid JSON"
+    ],
+    "description": "JSON null reaches the handler (endless batch failure)"
+  }
+]
