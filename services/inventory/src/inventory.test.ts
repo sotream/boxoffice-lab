@@ -25,6 +25,25 @@ for (const strategy of ["atomic-update", "for-update"] as Strategy[]) {
       expect((await svc.availability(EVENT)).free).toBe(18);
     });
 
+    it("invariant: no seat is held by two users, and held seats equal the sum of successful holds", async () => {
+      // Deterministic pseudo-random overlapping sets of 1 to 3 seats out of 20, from 200 concurrent users.
+      let x = 12345;
+      const rnd = (n: number) => { x = (x * 1103515245 + 12345) & 0x7fffffff; return x % n; };
+      const wants = Array.from({ length: 200 }, (_, i) => {
+        const size = 1 + rnd(3);
+        const set = new Set<number>();
+        while (set.size < size) set.add(1 + rnd(20));
+        return { user: `u${i}`, seats: [...set] };
+      });
+      const results = await Promise.all(wants.map((w) => svc.hold(EVENT, w.seats, w.user, strategy)));
+      const winners = wants.filter((_, i) => results[i].ok);
+      const claimed = winners.flatMap((w) => w.seats);
+      expect(new Set(claimed).size).toBe(claimed.length); // winners' seat sets are pairwise disjoint
+      const rows = (await pool.query("SELECT seat_id, held_by FROM seats WHERE event_id=$1 AND status='held'", [EVENT])).rows;
+      expect(rows).toHaveLength(claimed.length);
+      for (const w of winners) for (const s of w.seats) expect(rows.find((r) => r.seat_id === s)?.held_by).toBe(w.user);
+    });
+
     it("does not deadlock on overlapping seat sets in opposite order", async () => {
       const rs = await Promise.all(
         Array.from({ length: 40 }, (_, i) => svc.hold(EVENT, i % 2 ? [4, 5] : [5, 4], `u${i}`, strategy))
