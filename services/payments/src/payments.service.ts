@@ -63,9 +63,10 @@ export class PaymentsService {
     if (ins.rowCount === 0) {
       // Same key seen before: return the stored result, never charge again.
       const existing = (await this.pool.query("SELECT id, status FROM payments.payments WHERE idempotency_key=$1", [req.idempotencyKey])).rows[0];
-      return this.isFinal(existing.status) ? { kind: "done", payment: existing } : { kind: "in-progress", payment: existing };
+      const view = { id: Number(existing.id), status: existing.status as string };
+      return this.isFinal(view.status) ? { kind: "done", payment: view } : { kind: "in-progress", payment: view };
     }
-    return this.runBounded(ins.rows[0].id);
+    return this.runBounded(Number(ins.rows[0].id)); // bigserial comes back from pg as a string
   }
 
   /** Run the saga, but answer the caller within the step timeout: a timed-out step leaves the saga resumable and reports in-progress. */
@@ -74,18 +75,23 @@ export class PaymentsService {
     catch (e) {
       if (!(e instanceof StepTimeout)) throw e;
       const cur = (await this.pool.query("SELECT id, status FROM payments.payments WHERE id=$1", [id])).rows[0];
-      return { kind: "in-progress", payment: cur };
+      return { kind: "in-progress", payment: { id: Number(cur.id), status: cur.status } };
     }
   }
 
   /** Background sweeper: resume sagas stuck in PENDING/CHARGED/REFUNDING (timeout, crash). Safe to run on many instances: transitions are compare-and-set and the PSP is idempotent. */
+  /** Called for every saga a sweep could not advance (timeout, provider error). Without it a saga that fails on every run is invisible. */
+  onSweepError?: (id: number, err: unknown) => void;
+
   async sweep(olderThanSeconds = 3, limit = 200, parallel = 10): Promise<number> {
     const ids = (await this.pool.query(
       `SELECT id FROM payments.payments WHERE status IN ('PENDING','CHARGED','REFUNDING') AND updated_at < now() - make_interval(secs => $1) ORDER BY id LIMIT $2`,
-      [olderThanSeconds, limit])).rows.map((r) => r.id as number);
+      [olderThanSeconds, limit])).rows.map((r) => Number(r.id));
     let done = 0;
     for (let i = 0; i < ids.length; i += parallel) {
-      const rs = await Promise.allSettled(ids.slice(i, i + parallel).map((id) => this.run(id))); // a timeout again is retried by the next sweep
+      const batch = ids.slice(i, i + parallel);
+      const rs = await Promise.allSettled(batch.map((id) => this.run(id))); // a timeout again is retried by the next sweep
+      rs.forEach((r, k) => { if (r.status === "rejected") this.onSweepError?.(batch[k], r.reason); });
       done += rs.filter((r) => r.status === "fulfilled").length;
     }
     return done;

@@ -41,6 +41,7 @@ async function bootstrap() {
 
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), { logger: ["error"] });
   const svc = app.get(PaymentsService);
+  svc.onSweepError = (id, err) => { sweeperRuns.inc({ result: "error" }); log.warn("sweeper could not advance a saga", { paymentId: id, err }); };
   const sweeperLoop = startLoop({
     name: "sweeper", intervalMs: 1000,
     fn: async () => { const n = await svc.sweep(); sweeperRuns.inc({ result: "ok" }); if (n) sweeperResumed.inc(n); },
