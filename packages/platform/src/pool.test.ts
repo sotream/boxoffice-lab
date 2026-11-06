@@ -44,9 +44,52 @@ describe("createPool", () => {
     writeFileSync(join(dir, "001_a.sql"), "CREATE TEMP TABLE m_order(n int, t text); INSERT INTO m_order SELECT 1, current_setting('statement_timeout');");
     writeFileSync(join(dir, "README.txt"), "ignored");
     const p = mk({ max: 1, statementTimeoutMs: 5000 });
-    await migrate(p, dir);
+    await migrate(p, dir, `unit-${Date.now()}-order`);
     expect((await p.query("SELECT n, t FROM m_order ORDER BY n")).rows).toEqual([{ n: 1, t: "0" }, { n: 2, t: "0" }]);
     expect((await p.query("SHOW statement_timeout")).rows[0].statement_timeout).toBe("5s");
+  });
+});
+
+describe("migrate tracking", () => {
+  const dirWith = (files: Record<string, string>) => {
+    const dir = mkdtempSync(join(tmpdir(), "mig-"));
+    for (const [n, sql] of Object.entries(files)) writeFileSync(join(dir, n), sql);
+    return dir;
+  };
+
+  it("applies each file once: a non-idempotent migration is not replayed on the next boot", async () => {
+    const scope = `unit-${Date.now()}-once`;
+    const table = `mig_once_${Date.now()}`;
+    const dir = dirWith({ "001.sql": `CREATE TABLE public.${table}(n int); INSERT INTO public.${table} VALUES (1);` });
+    const p = mk({ max: 2 });
+    try {
+      await migrate(p, dir, scope);
+      await migrate(p, dir, scope); // plain CREATE TABLE would fail here if it ran again
+      expect((await p.query(`SELECT count(*)::int c FROM public.${table}`)).rows[0].c).toBe(1);
+    } finally { await p.query(`DROP TABLE IF EXISTS public.${table}`); await p.query("DELETE FROM public.schema_migrations WHERE scope=$1", [scope]); }
+  });
+
+  it("a failing file leaves no record and is retried", async () => {
+    const scope = `unit-${Date.now()}-fail`;
+    const dir = dirWith({ "001.sql": "SELECT 1/0;" });
+    const p = mk({ max: 2 });
+    await expect(migrate(p, dir, scope)).rejects.toThrow();
+    expect((await p.query("SELECT count(*)::int c FROM public.schema_migrations WHERE scope=$1", [scope])).rows[0].c).toBe(0);
+    writeFileSync(join(dir, "001.sql"), "SELECT 1;");
+    await migrate(p, dir, scope);
+    expect((await p.query("SELECT count(*)::int c FROM public.schema_migrations WHERE scope=$1", [scope])).rows[0].c).toBe(1);
+    await p.query("DELETE FROM public.schema_migrations WHERE scope=$1", [scope]);
+  });
+
+  it("instances booting at the same time do not race (advisory lock)", async () => {
+    const scope = `unit-${Date.now()}-race`;
+    const table = `mig_race_${Date.now()}`;
+    const dir = dirWith({ "001.sql": `CREATE TABLE public.${table}(n int); INSERT INTO public.${table} VALUES (1);` });
+    const pools = Array.from({ length: 6 }, () => mk({ max: 1 }));
+    try {
+      await Promise.all(pools.map((p) => migrate(p, dir, scope)));
+      expect((await pools[0].query(`SELECT count(*)::int c FROM public.${table}`)).rows[0].c).toBe(1);
+    } finally { await pools[0].query(`DROP TABLE IF EXISTS public.${table}`); await pools[0].query("DELETE FROM public.schema_migrations WHERE scope=$1", [scope]); }
   });
 });
 

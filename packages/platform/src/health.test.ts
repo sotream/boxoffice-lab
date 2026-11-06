@@ -51,6 +51,12 @@ describe("Readiness", () => {
     expect(calls).toBe(1);
   });
 
+  it("tcpCheck: a blackholed address fails after the timeout instead of hanging", async () => {
+    const t0 = Date.now();
+    await expect(tcpCheck("10.255.255.1:9", "k", true, 150).run()).rejects.toThrow(/timed out|ENETUNREACH|EHOSTUNREACH|ECONNREFUSED/);
+    expect(Date.now() - t0).toBeLessThan(1500);
+  });
+
   it("tcpCheck: open port passes, closed port fails", async () => {
     const srv = createServer((s) => s.destroy());
     await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
