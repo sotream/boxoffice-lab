@@ -12,6 +12,9 @@ export function verifyAdmission(token: string, eventId: number, secret: string, 
   const sig = parts.pop() as string;
   const body = parts.join(".");
   const [expStr, evStr] = [parts[parts.length - 1], parts[parts.length - 2]];
+  // Canonical lowercase hex only: Buffer.from(..., "hex") silently accepts upper case and ignores trailing garbage,
+  // which would make one signature verify under many different token strings.
+  if (!/^[0-9a-f]{64}$/.test(sig) || !/^\d{1,16}$/.test(evStr) || !/^\d{1,16}$/.test(expStr)) return null;
   const a = Buffer.from(sig, "hex");
   const b = Buffer.from(mac(body, secret), "hex");
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
