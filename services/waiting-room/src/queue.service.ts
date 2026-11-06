@@ -1,5 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import Redis from "ioredis";
+import { admitted, joins } from "./metrics";
 
 export const REDIS = "REDIS";
 export const ADMIT_TTL_SECONDS = 300;
@@ -19,10 +20,11 @@ export class QueueService {
   private aKey(eventId: number, id: string) { return `wr:${eventId}:admitted:${id}`; }
 
   async join(eventId: number, userId: string): Promise<{ position: number }> {
-    if (await this.redis.exists(this.aKey(eventId, userId))) return { position: 0 };
+    if (await this.redis.exists(this.aKey(eventId, userId))) { joins.inc({ result: "already_admitted" }); return { position: 0 }; }
     const seq = await this.redis.incr(`wr:${eventId}:seq`);
     await this.redis.zadd(this.qKey(eventId), "NX", seq, userId); // idempotent: re-join keeps the old place
     const rank = await this.redis.zrank(this.qKey(eventId), userId);
+    joins.inc({ result: "queued" });
     return { position: (rank ?? 0) + 1 };
   }
 
@@ -42,6 +44,7 @@ export class QueueService {
       const p = this.redis.pipeline();
       for (const id of ids) p.set(this.aKey(eventId, id), "1", "EX", ADMIT_TTL_SECONDS);
       await p.exec();
+      admitted.inc(ids.length);
     }
     return ids;
   }
