@@ -8,7 +8,7 @@ export class FakePsp implements Psp {
   readonly charges = new Map<string, string>();
   readonly refunds = new Set<string>();
   chargeCalls = 0;
-  constructor(private readonly latencyMs = 0, private readonly failRate = 0) {}
+  constructor(public latencyMs = 0, private readonly failRate = 0) {}
 
   async charge(key: string, _amount: number) {
     this.chargeCalls++;

@@ -29,6 +29,13 @@ describe("search strategies", () => {
 });
 
 describe("cache-aside", () => {
+  it("Redis failure degrades to the database instead of failing the read", async () => {
+    const broken = { get: async () => { throw new Error("down"); }, set: async () => { throw new Error("down"); } } as unknown as Redis;
+    const c = new Cache(broken, 30);
+    expect(await c.getOrLoad("t:x", async () => 42)).toBe(42);
+    expect(c.stats.errors).toBe(2);
+  });
+
   it("second call is a hit and does not touch the database", async () => {
     const c = new Cache(redis, 30);
     await c.getOrLoad("t:a", () => svc.search("rock", undefined, 5));

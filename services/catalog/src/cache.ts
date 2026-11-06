@@ -1,6 +1,6 @@
 import Redis from "ioredis";
 
-export interface CacheStats { hits: number; misses: number; coalesced: number }
+export interface CacheStats { hits: number; misses: number; coalesced: number; errors: number }
 
 /**
  * Cache-aside with two protections against the thundering herd:
@@ -10,7 +10,7 @@ export interface CacheStats { hits: number; misses: number; coalesced: number }
  * (instances x 1 query, not requests x 1 query).
  */
 export class Cache {
-  readonly stats: CacheStats = { hits: 0, misses: 0, coalesced: 0 };
+  readonly stats: CacheStats = { hits: 0, misses: 0, coalesced: 0, errors: 0 };
   private readonly inflight = new Map<string, Promise<unknown>>();
 
   constructor(private readonly redis: Redis, private readonly ttlSeconds = 30) {}
@@ -20,7 +20,8 @@ export class Cache {
   }
 
   async getOrLoad<T>(key: string, loader: () => Promise<T>): Promise<T> {
-    const cached = await this.redis.get(key);
+    let cached: string | null = null;
+    try { cached = await this.redis.get(key); } catch { this.stats.errors++; } // cache down: act as a miss, never fail the read
     if (cached !== null) { this.stats.hits++; return JSON.parse(cached) as T; }
 
     const running = this.inflight.get(key);
@@ -29,7 +30,7 @@ export class Cache {
     this.stats.misses++;
     const p = (async () => {
       const value = await loader();
-      await this.redis.set(key, JSON.stringify(value), "EX", this.ttlWithJitter());
+      try { await this.redis.set(key, JSON.stringify(value), "EX", this.ttlWithJitter()); } catch { this.stats.errors++; }
       return value;
     })().finally(() => this.inflight.delete(key));
     this.inflight.set(key, p);

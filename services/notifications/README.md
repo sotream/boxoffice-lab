@@ -14,4 +14,6 @@ Interview question: **"Design a notification system"** (at-least-once delivery, 
 - Retry with exponential backoff and full jitter, 4 attempts; then the message goes to `payments.dlq` and counts as handled.
 - Duplicate sitting next to its original in the same batch is "in flight": retried locally for up to ~2 s, then the batch is redelivered.
 
+Replay: `src/replay-dlq.ts` republishes `<topic>.dlq` after the cause is fixed; safe because delivery state is per channel (drill 5).
+
 See [CAPACITY.md](CAPACITY.md), [adr/](adr/), [RESULTS.md](RESULTS.md).

@@ -200,7 +200,7 @@ For "only one worker per job" with crash recovery this repo uses a lease (sectio
 - Tests: "publishes each row once per successful drain and marks it" (5 rows, drain returns 5 then 0); "a broker failure keeps rows unpublished (at-least-once, retry later)"; "two relays at once never publish the same row (SKIP LOCKED)": 40 payments, two relays with batch 10 and a 30 ms publish delay, `a + b == 20` and all published ids unique.
 - Drill 2 [measured] `docs/failure-drills.md`: broker stopped while 300 payments are made: 300/300 payments OK in 0.7 s, 300 events buffered in the outbox, caught up 1.2 s after the broker returned, topic grew by exactly 300.
 - Bottleneck [measured] `services/payments/RESULTS.md`: at PSP 0 ms, 697 RPS; Postgres container about 243% CPU with LWLock waits, payments Node about 84% CPU. The limit is the database: 3 commits per payment (insert, `PENDING -> CHARGED`, final state with the outbox row) plus inventory's confirm. The file's suggested next step is to collapse transitions that need no durability between them, or use `synchronous_commit=off` for the intermediate step. Commit count per business operation is the number to watch: [derived] at the planned 400 payments/s, 400 x 3 = 1 200 commits/s (`services/payments/CAPACITY.md`).
-- Detail worth knowing: the relay holds its row locks and a pool connection while it publishes (the publish happens inside the open transaction). A slow broker therefore holds one connection per relay; see the slow-dependency section in [reliability patterns](reliability-patterns.md).
+- Detail worth knowing: the relay holds its row locks and a pool connection while it publishes (the publish happens inside the open transaction). A slow broker therefore holds one connection per relay; see the slow-dependency section in [reliability patterns](reliability-patterns.md). (Update: the relay now runs on its own 3-connection pool and the publish has a 5 s timeout, so a slow broker cannot starve the saga.)
 - Sibling repo: kafka-pay-lab has the same shape (`apps/api/src/infrastructure/outbox/outbox-relay.ts`: pessimistic write lock with `skip_locked`, batch of 50, "at-least-once ... consumers must be idempotent").
 
 ## 8. At-least-once delivery plus dedup
@@ -271,5 +271,5 @@ Still paper (no code or tests here):
 - Phantom-predicate protection (SERIALIZABLE or a counter row): not needed by the current data model, not built.
 - Same key with a different body (422) and a request-fingerprint check: only in kafka-pay-lab, not here.
 - A crash between `psp.charge` and the `CHARGED` commit has no dedicated test.
-- DLQ replay tooling: the ADR says operations replay the DLQ; no replay code exists.
+- DLQ replay: done (`services/notifications/src/replay-dlq.ts`, drill 5 in `docs/failure-drills.md`, [measured]: replay is safe because delivery state is per (event, channel)). Still paper: alerting on DLQ depth.
 - Numbers not measured: successful-hold rate under hot contention, how often a send outlives the 30 s lease, Postgres lock wait times.
