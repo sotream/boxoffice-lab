@@ -13,7 +13,7 @@ The headline claims of this repository are correctness claims: no oversell, atom
 | Contract and fuzz at the HTTP edge | hostile input never gives a 5xx; cache keys are unambiguous | `services/catalog/src/properties.test.ts`, `services/waiting-room/src/http.test.ts` | seconds |
 | Failure-injection with a fake broker | dead-letter routing and partition progress of the real `consumer.ts` | `services/notifications/src/properties.test.ts` | seconds, no Kafka |
 | End-to-end with crashes | the invariants across gateway, inventory, payments, outbox, Kafka and notifications, including `kill -9` of payments and of the consumer | `packages/e2e` ([docs/e2e.md](e2e.md)) | about 2.5 minutes, needs Redpanda |
-| Mutation check | the tests above fail when the production code is deliberately broken | `scripts/mutation-check.mjs` | about 6 minutes |
+| Mutation check | the tests above fail when the production code is deliberately broken | `scripts/mutation-check.mjs` | about 8 minutes |
 | Load tests and failure drills | numbers and behaviour under load (k6, `drills/`) | `services/*/load`, `docs/failure-drills.md` | minutes, manual |
 
 Payments is covered in its own section below: its saga is proven with a PSP contract suite, deterministic race tests, a crash at each of 8 fault points, and a fast-check model test over random interleavings (`services/payments/src/psp.contract.ts`, `saga.races.ts`, `saga.property.ts`; ADR 005). Invariants asserted: one terminal state per payment; exactly one outbox event and never both confirmed and refunded; charged minus refunded cents equals the sum of CONFIRMED amounts; at most one effective refund per charge. `SAGA_RUNS=300` raises the number of generated scenarios. The mutation runner covers the payments saga, outbox relay and trace storage (`pay-*` ids below).
@@ -108,8 +108,17 @@ It refuses to mutate `packages/platform`, `main.ts`, `db.ts`, `app.module.ts`, g
 | `not-lease` | notifications | a live worker's lease is stolen | KILLED |
 | `not-dlq-route` | notifications | dead letters fail the batch instead of going to the DLQ | KILLED |
 | `not-event-shape` | notifications | JSON null reaches the handler (endless batch failure) | KILLED |
+| `inv-atomic-lock-order` | inventory | atomic hold no longer locks rows in seat_id order first | KILLED |
+| `pay-stale-after-charge` | payments | a runner that lost PENDING to CHARGED keeps going on a stale view | KILLED |
+| `pay-sweeper-skips-refunding` | payments | sweeper no longer resumes sagas stuck in REFUNDING | KILLED |
+| `pay-refund-key-unique` | payments | refund idempotency key differs per attempt (retry refunds twice) | KILLED |
+| `pay-lost-cas-writes-event` | payments | a runner that lost the compare-and-set still writes the outbox event | KILLED |
+| `pay-refunding-is-final` | payments | pay() reports an in-flight refund as final | KILLED |
+| `pay-trace-not-stored` | payments | request trace not stored on the payment row | KILLED |
+| `pay-relay-id-string` | payments | outbox id published as a string and dead-lettered | KILLED |
+| `gw-user-mismatch` | gateway | gateway forwards a body whose userId differs from the admission token | KILLED |
 
-37 of 37 killed on the last run (2026-11-06). `inv-forupdate-orderby` first survived: ids are sorted before the query and a small table is locked in key order by the planner anyway, so no concurrency test can tell; it is now killed by the statement-level lock-ordering test, which is a contract check rather than a behavioural one.
+46 of 46 killed on the last run (2026-11-06). After the lock-order fix two inventory mutations had stale `find` strings (the SQL changed) and one was caught by a different test than expected (a deadlock surfaces in whichever concurrent test hits it first); the definitions were updated, no mutation survived. `inv-forupdate-orderby` first survived: ids are sorted before the query and a small table is locked in key order by the planner anyway, so no concurrency test can tell; it is now killed by the statement-level lock-ordering test, which is a contract check rather than a behavioural one.
 
 ## Bugs found by these tests
 
