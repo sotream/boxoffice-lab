@@ -3,8 +3,8 @@
     "id": "inv-hold-expiry-atomic",
     "package": "@boxoffice/inventory",
     "file": "services/inventory/src/inventory.service.ts",
-    "find": "(status='free' OR (status='held' AND hold_until < now()))\n         RETURNING hold_until",
-    "replace": "status='free'\n         RETURNING hold_until",
+    "find": "             AND (status='free' OR (status='held' AND hold_until < now()))\n           ORDER BY seat_id FOR UPDATE)\n         UPDATE seats s SET status='held'",
+    "replace": "             AND status='free'\n           ORDER BY seat_id FOR UPDATE)\n         UPDATE seats s SET status='held'",
     "expectFailingTests": [
       "expired holds become free again",
       "model-based"
@@ -49,8 +49,8 @@
     "id": "inv-forupdate-orderby",
     "package": "@boxoffice/inventory",
     "file": "services/inventory/src/inventory.service.ts",
-    "find": "ORDER BY seat_id FOR UPDATE",
-    "replace": "FOR UPDATE",
+    "find": "         ORDER BY seat_id FOR UPDATE`,\n        [eventId, ids]",
+    "replace": "         FOR UPDATE`,\n        [eventId, ids]",
     "expectFailingTests": [
       "lock ordering contract"
     ],
@@ -529,7 +529,9 @@
     "find": "             AND (status='free' OR (status='held' AND hold_until < now()))\n           ORDER BY seat_id FOR UPDATE)",
     "replace": "             AND (status='free' OR (status='held' AND hold_until < now()))\n           )",
     "expectFailingTests": [
-      "never deadlock"
+      "never deadlock",
+      "does not deadlock",
+      "invariant: no seat is held"
     ],
     "description": "atomic hold no longer locks rows in seat_id order first"
   }
