@@ -1,5 +1,7 @@
-import { Kafka } from "kafkajs";
+import { Kafka, IHeaders } from "kafkajs";
+import { contextFromHeaders, getLogger, runWithContext } from "@boxoffice/platform";
 import { DeadLetter, InFlight, NotificationHandler, PaymentEvent } from "./handler";
+import { consumerLag, dlq as dlqCounter } from "./metrics";
 
 export interface ConsumerOptions { broker: string; topic: string; groupId: string; concurrency?: number; partitionsConcurrently?: number }
 
@@ -25,10 +27,15 @@ export async function runConsumer(handler: NotificationHandler, o: ConsumerOptio
         const chunk = batch.messages.slice(i, i + conc);
         await Promise.all(chunk.map(async (m) => {
           const raw = m.value?.toString() ?? "";
-          try { await handleWithInFlightRetry(handler, JSON.parse(raw) as PaymentEvent); }
+          // The producer put x-request-id / traceparent in the Kafka headers: continue the same trace here, new span for this hop.
+          const traceHeaders = headerStrings(m.headers);
+          const ctx = contextFromHeaders(traceHeaders);
+          try { await runWithContext(ctx, () => handleWithInFlightRetry(handler, parseEvent(raw))); }
           catch (err) {
             if (err instanceof DeadLetter || err instanceof SyntaxError) {
-              await dlq.send({ topic: `${o.topic}.dlq`, messages: [{ key: m.key, value: raw, headers: { error: String(err.message) } }] });
+              dlqCounter.inc();
+              runWithContext(ctx, () => getLogger().warn("message dead-lettered", { err, topic: o.topic, partition: batch.partition, offset: m.offset }));
+              await dlq.send({ topic: `${o.topic}.dlq`, messages: [{ key: m.key, value: raw, headers: { ...traceHeaders, error: String(err.message) } }] });
             } else throw err;
           }
         }));
@@ -36,9 +43,29 @@ export async function runConsumer(handler: NotificationHandler, o: ConsumerOptio
         await commitOffsetsIfNecessary();
         await heartbeat();
       }
+      if (typeof batch.offsetLag === "function") consumerLag.set({ partition: String(batch.partition) }, Number(batch.offsetLag()));
     }
   });
   return { stop: async () => { await consumer.disconnect(); await dlq.disconnect(); } };
+}
+
+/**
+ * Valid JSON is not enough: `null`, a number, or an object without outboxId would make the handler throw a TypeError or a
+ * NOT NULL violation, which is not a DeadLetter, so the batch would fail and be redelivered forever (a poison pill that
+ * blocks the partition). A SyntaxError is routed to the DLQ by the caller.
+ */
+export function parseEvent(raw: string): PaymentEvent {
+  const e = JSON.parse(raw) as Partial<PaymentEvent> | null;
+  if (typeof e !== "object" || e === null || !Number.isSafeInteger(e.outboxId) || typeof e.eventType !== "string" || typeof e.userId !== "string" || !Array.isArray(e.seatIds)) {
+    throw new SyntaxError("not a payment event");
+  }
+  return e as PaymentEvent;
+}
+
+function headerStrings(h: IHeaders | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(h ?? {})) { const x = Array.isArray(v) ? v[0] : v; if (x !== undefined) out[k] = x.toString(); }
+  return out;
 }
 
 /** A duplicate that lands next to its original is "in flight": wait briefly and re-check instead of failing the batch. */

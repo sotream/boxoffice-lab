@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { delivered, duplicatesSuppressed } from "./metrics";
 
 export type Channel = "email" | "push";
 export type Sender = (channel: Channel, to: string, text: string, dedupKey: string) => Promise<void>;
@@ -58,13 +59,14 @@ export class NotificationHandler {
          RETURNING status`, [e.outboxId, ch, (this.opts.leaseMs ?? 30_000) / 1000]);
       if (claim.rowCount === 0) {
         const cur = (await this.pool.query("SELECT status FROM notifications.deliveries WHERE outbox_id=$1 AND channel=$2", [e.outboxId, ch])).rows[0];
-        if (cur?.status === "SENT") { skipped.push(ch); continue; }
+        if (cur?.status === "SENT") { skipped.push(ch); duplicatesSuppressed.inc({ channel: ch }); continue; }
         inFlight = true; continue; // someone else is sending it right now
       }
       try {
         await this.withRetry(() => this.send(ch, e.userId, text, `${e.outboxId}:${ch}`), e.outboxId, ch);
         await this.pool.query("UPDATE notifications.deliveries SET status='SENT', updated_at=now() WHERE outbox_id=$1 AND channel=$2", [e.outboxId, ch]);
         sent.push(ch);
+        delivered.inc({ channel: ch });
       } catch (err) {
         await this.pool.query("UPDATE notifications.deliveries SET status='FAILED', updated_at=now() WHERE outbox_id=$1 AND channel=$2", [e.outboxId, ch]);
         failed.push(ch); lastErr = err;
