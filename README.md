@@ -59,6 +59,8 @@ The admission budget in the second picture is derived as 2 600 x 0.6 / 3 = 520 u
 | Design a notification system | [notifications](services/notifications) | [Kafka log, at-least-once plus dedup key, DLQ](services/notifications/adr/001-kafka-for-notifications.md) | 1 393 deliveries/s on 3 partitions (447 on 1); 38 000 drained in 27.3 s; 0 duplicates |
 | Design search; Postgres FTS vs Elasticsearch | [catalog](services/catalog) | [tsvector + GIN first, cache-aside in front](services/catalog/adr/001-postgres-fts-before-elasticsearch.md) | 10 275 RPS cached (p99 9.0 ms); 536 RPS ranked uncached; GIN about 390x faster than ILIKE on a rare term |
 
+Numbers in this table are per-instance, from one MacBook Air M1 with the load generator on the same machine (see [Limits](#limits-of-this-lab)): planning figures, not production claims.
+
 ## Capacity formulas
 
 All use 0.6 as the default utilisation (headroom for GC, deploys, a lost node).
@@ -102,7 +104,7 @@ Load scripts (run from the service directory, after `pnpm build`):
 | gateway flash sale | start inventory with `SEED_SEATS=5000`, waiting-room, gateway, then `k6 run services/gateway/load/flash-sale.js` (`USERS`, `SEATS`, `BASE`, `ARRIVAL_SPREAD_S`, default 3) |
 | notifications | `cd services/notifications && node load/bench.js` (needs postgres and redpanda up) |
 
-Each service README lists the exact environment variables it reads; check the service `src/main.ts` if a run needs a different setup.
+The environment variables a service reads are in its `src/main.ts`; the gateway README also documents `TRUST_PROXY`.
 
 ## Repository layout
 
