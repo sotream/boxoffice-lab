@@ -4,8 +4,11 @@
   "version": "0.0.0",
   "packageManager": "pnpm@12.16.1",
   "scripts": {
-    "test": "pnpm -r test",
-    "build": "pnpm -r build"
+    "build": "pnpm -r build",
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "test:coverage": "pnpm -r --workspace-concurrency=1 exec vitest run --coverage",
+    "test:mutation": "node scripts/mutation-check.mjs",
+    "ops:check": "node ops/check.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^5.1.0",

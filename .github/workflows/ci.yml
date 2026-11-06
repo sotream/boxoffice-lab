@@ -11,10 +11,10 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env: { POSTGRES_USER: lab, POSTGRES_PASSWORD: lab, POSTGRES_DB: lab }
         ports: ["55432:5432"]
         options: >-
@@ -31,6 +31,38 @@ jobs:
         with:
           node-version: 26
           cache: pnpm
+      # Redpanda is not a plain service container (it needs start arguments), so it is started by hand.
+      - name: Start Redpanda
+        run: |
+          docker run -d --name redpanda -p 59092:59092 redpandadata/redpanda:v24.2.7 \
+            redpanda start --smp=1 --memory=512M --overprovisioned --node-id=0 \
+            --kafka-addr=PLAINTEXT://0.0.0.0:59092 --advertise-kafka-addr=PLAINTEXT://localhost:59092
+          for i in $(seq 1 30); do docker exec redpanda rpk cluster health >/dev/null 2>&1 && exit 0; sleep 2; done
+          docker logs redpanda; exit 1
       - run: pnpm install --frozen-lockfile
-      - run: pnpm -r build
-      - run: pnpm -r test
+      - run: pnpm build
+      - run: pnpm ops:check
+      # Packages share one Postgres and one Redis, so they run one after another (see docs/testing.md).
+      # Coverage thresholds live in each package's vitest.config.ts.
+      - run: pnpm test:coverage
+
+  # Dependabot PRs are merged here, after the tests above passed. GitHub's own auto-merge needs branch protection with
+  # required checks, which a private repository on the free plan does not have, so the gate is this job's `needs: test`.
+  # Majors stay manual: they are a deliberate move (and, for Postgres/Redis images, a re-measurement).
+  automerge:
+    needs: test
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
+        run: gh pr merge --squash --delete-branch "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

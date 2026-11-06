@@ -1,4 +1,5 @@
 version: 2
+# Patch and minor PRs are merged by the `automerge` job in ci.yml once the tests pass; majors are reviewed by hand.
 updates:
   # One pnpm workspace: the lockfile and all packages/*, services/* manifests are updated from the root.
   - package-ecosystem: npm
@@ -22,7 +23,7 @@ updates:
     schedule:
       interval: weekly
     ignore:
-      # A database major is a deliberate move (and a re-measurement), not a bot PR.
+      # A database major is a deliberate move (and a re-measurement), not a bot PR. Postgres 18 was adopted by hand.
       - dependency-name: postgres
         update-types: ['version-update:semver-major']
       - dependency-name: redis
