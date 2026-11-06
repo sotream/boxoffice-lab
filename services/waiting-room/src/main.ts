@@ -5,7 +5,6 @@ import Redis from "ioredis";
 import { createShutdown, drainHttp, initService, loadConfigOrExit, Readiness, redisCheck, shutdownEnv, startLoop, wireNest } from "@boxoffice/platform";
 import { AppModule } from "./app.module";
 import { admissionErrors, registerQueueLengthGauge } from "./metrics";
-import { ADMIT_PER_SECOND } from "./queue.controller";
 import { QueueService, REDIS } from "./queue.service";
 
 /** The admission tick serves one event (the sale being run). */
@@ -14,7 +13,7 @@ const ADMISSION_EVENT_ID = 1;
 async function bootstrap() {
   const log = initService("waiting-room");
   const cfg = loadConfigOrExit((e) => {
-    e.secret("ADMISSION_SECRET", "dev-secret"); // validated here; queue.controller reads it at import
+    e.secret("ADMISSION_SECRET", "dev-secret"); // validated here; queue.controller reads it (and ADMIT_PER_SECOND, for the ETA) at import
     e.url("REDIS_URL", "redis://localhost:56379", ["redis:", "rediss:"]);
     return { port: e.port("PORT", 3102), admitPerSecond: e.int("ADMIT_PER_SECOND", 500, { min: 1 }), shutdown: shutdownEnv(e) };
   });
@@ -28,7 +27,7 @@ async function bootstrap() {
   // Admission tick: every 100 ms release a tenth of the per-second budget.
   const tick = startLoop({
     name: "admission", intervalMs: 100,
-    fn: () => q.admit(ADMISSION_EVENT_ID, Math.max(1, Math.round(ADMIT_PER_SECOND / 10))).then(() => undefined),
+    fn: () => q.admit(ADMISSION_EVENT_ID, Math.max(1, Math.round(cfg.admitPerSecond / 10))).then(() => undefined),
     onError: () => admissionErrors.inc()
   });
 
