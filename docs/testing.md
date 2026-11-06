@@ -15,7 +15,7 @@ The headline claims of this repository are correctness claims: no oversell, atom
 | Mutation check | the tests above fail when the production code is deliberately broken | `scripts/mutation-check.mjs` | about 6 minutes |
 | Load tests and failure drills | numbers and behaviour under load (k6, `drills/`) | `services/*/load`, `docs/failure-drills.md` | minutes, manual |
 
-Payments has its own tests and is not covered by this document.
+Payments is covered in its own section below: its saga is proven with a PSP contract suite, deterministic race tests, a crash at each of 8 fault points, and a fast-check model test over random interleavings (`services/payments/src/psp.contract.ts`, `saga.races.ts`, `saga.property.ts`; ADR 005). Invariants asserted: one terminal state per payment; exactly one outbox event and never both confirmed and refunded; charged minus refunded cents equals the sum of CONFIRMED amounts; at most one effective refund per charge. `SAGA_RUNS=300` raises the number of generated scenarios. The mutation runner does not cover payments yet (it refuses payments files); the payments tests were mutation-checked by hand while they were written, and those breaks are not reproducible from this repository.
 
 ## What each invariant proves
 
