@@ -1,0 +1,274 @@
+# Alert and recording rules for the flash-sale journey. Rationale, SLO targets and the burn-rate maths: docs/operations.md.
+# Every metric used here is checked against the metric names defined in the code by packages/platform/src/ops-consistency.test.ts
+# (run `node ops/check.mjs`). Thresholds marked "starting value" are not measured: calibrate them from a load run.
+groups:
+  - name: sli-recording
+    rules:
+      - record: sli:gateway_errors:ratio_rate5m
+        expr: |
+          sum(rate(http_requests_total{service="gateway",status_class="5xx",route!="unmatched"}[5m]))
+          /
+          sum(rate(http_requests_total{service="gateway",route!="unmatched"}[5m]))
+      - record: sli:gateway_errors:ratio_rate30m
+        expr: |
+          sum(rate(http_requests_total{service="gateway",status_class="5xx",route!="unmatched"}[30m]))
+          /
+          sum(rate(http_requests_total{service="gateway",route!="unmatched"}[30m]))
+      - record: sli:gateway_errors:ratio_rate1h
+        expr: |
+          sum(rate(http_requests_total{service="gateway",status_class="5xx",route!="unmatched"}[1h]))
+          /
+          sum(rate(http_requests_total{service="gateway",route!="unmatched"}[1h]))
+      - record: sli:gateway_errors:ratio_rate6h
+        expr: |
+          sum(rate(http_requests_total{service="gateway",status_class="5xx",route!="unmatched"}[6h]))
+          /
+          sum(rate(http_requests_total{service="gateway",route!="unmatched"}[6h]))
+      - record: sli:gateway_errors:ratio_rate3d
+        expr: |
+          sum(rate(http_requests_total{service="gateway",status_class="5xx",route!="unmatched"}[3d]))
+          /
+          sum(rate(http_requests_total{service="gateway",route!="unmatched"}[3d]))
+      - record: sli:hold_slow:ratio_rate5m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{service="inventory",method="POST",route="/events/:eventId/holds",le="0.5"}[5m]))
+            /
+            sum(rate(http_request_duration_seconds_count{service="inventory",method="POST",route="/events/:eventId/holds"}[5m]))
+          )
+      - record: sli:hold_slow:ratio_rate30m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{service="inventory",method="POST",route="/events/:eventId/holds",le="0.5"}[30m]))
+            /
+            sum(rate(http_request_duration_seconds_count{service="inventory",method="POST",route="/events/:eventId/holds"}[30m]))
+          )
+      - record: sli:hold_slow:ratio_rate1h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{service="inventory",method="POST",route="/events/:eventId/holds",le="0.5"}[1h]))
+            /
+            sum(rate(http_request_duration_seconds_count{service="inventory",method="POST",route="/events/:eventId/holds"}[1h]))
+          )
+      - record: sli:hold_slow:ratio_rate6h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{service="inventory",method="POST",route="/events/:eventId/holds",le="0.5"}[6h]))
+            /
+            sum(rate(http_request_duration_seconds_count{service="inventory",method="POST",route="/events/:eventId/holds"}[6h]))
+          )
+      - record: sli:hold_slow:ratio_rate3d
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{service="inventory",method="POST",route="/events/:eventId/holds",le="0.5"}[3d]))
+            /
+            sum(rate(http_request_duration_seconds_count{service="inventory",method="POST",route="/events/:eventId/holds"}[3d]))
+          )
+  - name: slo-burn-rate
+    rules:
+      - alert: GatewayAvailabilityFastBurn
+        expr: sli:gateway_errors:ratio_rate1h > 0.072 and sli:gateway_errors:ratio_rate5m > 0.072
+        for: 2m
+        labels: { severity: critical, route: page, slo: gateway-availability }
+        annotations:
+          summary: "gateway 5xx ratio (budget 0.5%): burning the error budget 14.4x too fast (2% of the 30-day budget in 1 hour)"
+          runbook: docs/operations.md#gateway-availability
+      - alert: GatewayAvailabilitySlowBurn
+        expr: sli:gateway_errors:ratio_rate6h > 0.03 and sli:gateway_errors:ratio_rate30m > 0.03
+        for: 2m
+        labels: { severity: critical, route: page, slo: gateway-availability }
+        annotations:
+          summary: "gateway 5xx ratio (budget 0.5%): burning the error budget 6x too fast (5% of the 30-day budget in 6 hours)"
+          runbook: docs/operations.md#gateway-availability
+      - alert: GatewayAvailabilityTicketBurn
+        expr: sli:gateway_errors:ratio_rate3d > 0.005 and sli:gateway_errors:ratio_rate6h > 0.005
+        for: 15m
+        labels: { severity: warning, route: ticket, slo: gateway-availability }
+        annotations:
+          summary: "gateway 5xx ratio (budget 0.5%): burning the error budget 1x too fast (10% of the 30-day budget in 3 days)"
+          runbook: docs/operations.md#gateway-availability
+      - alert: HoldLatencyFastBurn
+        expr: sli:hold_slow:ratio_rate1h > 0.144 and sli:hold_slow:ratio_rate5m > 0.144
+        for: 2m
+        labels: { severity: critical, route: page, slo: hold-latency }
+        annotations:
+          summary: "holds slower than 500 ms (budget 1%): burning the error budget 14.4x too fast (2% of the 30-day budget in 1 hour)"
+          runbook: docs/operations.md#hold-latency
+      - alert: HoldLatencySlowBurn
+        expr: sli:hold_slow:ratio_rate6h > 0.06 and sli:hold_slow:ratio_rate30m > 0.06
+        for: 2m
+        labels: { severity: critical, route: page, slo: hold-latency }
+        annotations:
+          summary: "holds slower than 500 ms (budget 1%): burning the error budget 6x too fast (5% of the 30-day budget in 6 hours)"
+          runbook: docs/operations.md#hold-latency
+      - alert: HoldLatencyTicketBurn
+        expr: sli:hold_slow:ratio_rate3d > 0.01 and sli:hold_slow:ratio_rate6h > 0.01
+        for: 15m
+        labels: { severity: warning, route: ticket, slo: hold-latency }
+        annotations:
+          summary: "holds slower than 500 ms (budget 1%): burning the error budget 1x too fast (10% of the 30-day budget in 3 days)"
+          runbook: docs/operations.md#hold-latency
+  - name: dependencies-and-saturation
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 1m
+        labels: { severity: critical, route: page, slo: availability }
+        annotations:
+          summary: "{{ $labels.job }} is not answering its /metrics scrape"
+          runbook: docs/operations.md#general
+      - alert: PgPoolSaturated
+        expr: max by (service, pool) (pg_pool_waiting_clients) > 0
+        for: 2m
+        labels: { severity: warning, route: ticket, slo: capacity }
+        annotations:
+          summary: "{{ $labels.service }} pool {{ $labels.pool }} has requests waiting for a connection (starting value: any waiter for 2 min)"
+          runbook: docs/operations.md#general
+      - alert: EventLoopLagHigh
+        expr: max by (service) (nodejs_eventloop_lag_p99_seconds) > 0.1
+        for: 5m
+        labels: { severity: warning, route: ticket, slo: capacity }
+        annotations:
+          summary: "{{ $labels.service }} event loop p99 lag above 100 ms (starting value)"
+          runbook: docs/operations.md#general
+      - alert: ServerErrorRatioHigh
+        expr: |
+          sum by (service) (rate(http_requests_total{status_class="5xx",service!="gateway"}[5m]))
+          / sum by (service) (rate(http_requests_total{service!="gateway"}[5m])) > 0.05
+        for: 5m
+        labels: { severity: warning, route: ticket, slo: availability }
+        annotations:
+          summary: "{{ $labels.service }} answers more than 5% 5xx (starting value)"
+          runbook: docs/operations.md#general
+
+  - name: gateway
+    rules:
+      - alert: GatewayLimiterFailClosed
+        expr: sum(rate(gateway_limiter_decisions_total{decision="fail_closed"}[2m])) > 0
+        for: 1m
+        labels: { severity: critical, route: page, slo: gateway-availability }
+        annotations:
+          summary: "Rate limiter store unreachable: holds and queue joins are being refused with 503 (drill 1)"
+          runbook: docs/operations.md#drill-1-redis-down
+      - alert: GatewayLimiterFailOpen
+        expr: sum(rate(gateway_limiter_decisions_total{decision="fail_open"}[2m])) > 0
+        for: 1m
+        labels: { severity: warning, route: ticket, slo: gateway-availability }
+        annotations:
+          summary: "Rate limiter store unreachable: public reads are served without a limit (drill 1)"
+          runbook: docs/operations.md#drill-1-redis-down
+      - alert: GatewayUpstreamTimeouts
+        expr: |
+          sum by (upstream) (rate(gateway_upstream_errors_total{reason="timeout"}[5m]))
+          / ignoring(upstream) group_left sum(rate(http_requests_total{service="gateway",route!="unmatched"}[5m])) > 0.01
+        for: 5m
+        labels: { severity: warning, route: ticket, slo: gateway-availability }
+        annotations:
+          summary: "More than 1% of gateway requests time out waiting for {{ $labels.upstream }} (starting value)"
+          runbook: docs/operations.md#general
+
+  - name: waiting-room
+    rules:
+      - alert: WaitingRoomAdmissionErrors
+        expr: sum(rate(waitingroom_admission_errors_total[2m])) > 0
+        for: 2m
+        labels: { severity: critical, route: page, slo: journey }
+        annotations:
+          summary: "The admission tick is failing: nobody is being let in"
+          runbook: docs/operations.md#drill-1-redis-down
+      - alert: WaitingRoomNotAdmitting
+        expr: max(waitingroom_queue_length) > 0 and sum(rate(waitingroom_admitted_total[5m])) == 0
+        for: 5m
+        labels: { severity: critical, route: page, slo: journey }
+        annotations:
+          summary: "People are queued but none were admitted in 5 minutes"
+          runbook: docs/operations.md#general
+
+  - name: payments
+    rules:
+      - alert: PaymentsOutboxLagHigh
+        expr: max(payments_outbox_oldest_unpublished_age_seconds) > 60
+        for: 2m
+        labels: { severity: critical, route: page, slo: confirmation-freshness }
+        annotations:
+          summary: "The oldest outbox event is {{ $value | humanizeDuration }} old: events are not reaching the broker (drill 2). Starting value: 60 s"
+          runbook: docs/operations.md#drill-2-broker-down
+      - alert: PaymentsOutboxBacklogHigh
+        expr: max(payments_outbox_backlog) > 1000
+        for: 5m
+        labels: { severity: warning, route: ticket, slo: confirmation-freshness }
+        annotations:
+          summary: "Outbox backlog above 1000 rows (two relay batches of 500) for 5 minutes (starting value)"
+          runbook: docs/operations.md#drill-2-broker-down
+      - alert: PaymentsRelayErrors
+        expr: sum(increase(payments_outbox_relay_errors_total[5m])) > 0
+        for: 5m
+        labels: { severity: warning, route: ticket, slo: confirmation-freshness }
+        annotations:
+          summary: "The outbox relay has been failing for 5 minutes"
+          runbook: docs/operations.md#drill-2-broker-down
+      - alert: PaymentsSagasStuck
+        expr: max by (state) (payments_sagas{state=~"PENDING|CHARGED|REFUNDING"}) > 0
+        for: 10m
+        labels: { severity: warning, route: ticket, slo: payment-completion }
+        annotations:
+          summary: "Sagas have stayed in {{ $labels.state }} for 10 minutes although the sweeper retries every second (drill 4)"
+          runbook: docs/operations.md#drill-4-slow-payment-provider
+      - alert: PaymentsInProgressRatioHigh
+        expr: |
+          sum(rate(payments_in_progress_total[10m]))
+          / (sum(rate(payments_in_progress_total[10m])) + sum(rate(payments_final_total[10m]))) > 0.05
+        for: 10m
+        labels: { severity: warning, route: ticket, slo: payment-completion }
+        annotations:
+          summary: "More than 5% of payment requests answer 202 in-progress: the provider or inventory confirm is slow (drill 4). Starting value"
+          runbook: docs/operations.md#drill-4-slow-payment-provider
+      - alert: PaymentsSweeperFailing
+        expr: sum(rate(payments_sweeper_runs_total{result="error"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning, route: ticket, slo: payment-completion }
+        annotations:
+          summary: "The payments sweeper is failing, stuck sagas will not be resumed"
+          runbook: docs/operations.md#drill-4-slow-payment-provider
+
+  - name: notifications
+    rules:
+      - alert: NotificationsDeadLettered
+        expr: sum(increase(notifications_dlq_total[10m])) > 0
+        labels: { severity: warning, route: ticket, slo: confirmation-freshness }
+        annotations:
+          summary: "Messages were dead-lettered in the last 10 minutes; fix the cause, then replay (drill 5)"
+          runbook: docs/operations.md#drill-5-channel-down-dlq
+      - alert: NotificationsConsumerLagHigh
+        expr: max(notifications_consumer_lag_messages) > 1000
+        for: 10m
+        labels: { severity: warning, route: ticket, slo: confirmation-freshness }
+        annotations:
+          summary: "Notifications consumer lag above 1000 messages for 10 minutes (starting value; the gauge only updates when a batch is processed)"
+          runbook: docs/operations.md#drill-3-consumer-killed
+      - alert: NotificationsNotDelivering
+        expr: sum(rate(notifications_delivered_total[10m])) == 0 and max(notifications_consumer_lag_messages) > 0
+        for: 10m
+        labels: { severity: critical, route: page, slo: confirmation-freshness }
+        annotations:
+          summary: "There is consumer lag and nothing was delivered for 10 minutes (drill 3)"
+          runbook: docs/operations.md#drill-3-consumer-killed
+
+  - name: catalog
+    rules:
+      - alert: CatalogCacheErrors
+        expr: sum(rate(catalog_cache_requests_total{result="error"}[5m])) > 0
+        for: 5m
+        labels: { severity: warning, route: ticket, slo: catalog }
+        annotations:
+          summary: "Catalog cannot reach Redis: every read goes to Postgres"
+          runbook: docs/operations.md#drill-1-redis-down
+      - alert: CatalogCacheHitRatioLow
+        expr: |
+          sum(rate(catalog_cache_requests_total{result="hit"}[15m]))
+          / sum(rate(catalog_cache_requests_total{result=~"hit|miss"}[15m])) < 0.5
+        for: 15m
+        labels: { severity: warning, route: ticket, slo: catalog }
+        annotations:
+          summary: "Catalog cache hit ratio below 50% for 15 minutes (starting value, depends on the traffic mix)"
+          runbook: docs/operations.md#general
