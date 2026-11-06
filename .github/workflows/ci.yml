@@ -45,6 +45,8 @@ jobs:
       # Packages share one Postgres and one Redis, so they run one after another (see docs/testing.md).
       # Coverage thresholds live in each package's vitest.config.ts.
       - run: pnpm test:coverage
+      # Real processes, kill -9 of payments and notifications, about 2.5 minutes (docs/e2e.md).
+      - run: pnpm test:e2e
 
   # Dependabot PRs are merged here, after the tests above passed. GitHub's own auto-merge needs branch protection with
   # required checks, which a private repository on the free plan does not have, so the gate is this job's `needs: test`.
