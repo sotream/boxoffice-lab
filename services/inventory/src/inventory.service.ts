@@ -76,16 +76,32 @@ export class InventoryService {
     }
   }
 
-  /** Confirm a hold into a sale; only the holder, only while the hold is valid. */
+  /** Confirm a hold into a sale; only the holder, only while the hold is valid. All-or-nothing, like hold. */
   async confirm(eventId: number, seatIds: number[], userId: string): Promise<boolean> {
-    const res = await this.pool.query(
-      // Idempotent: a retry after a lost response (timeout) must still succeed, so already-sold-to-this-user counts.
-      `UPDATE seats SET status='sold', hold_until=NULL
-       WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3
-         AND ((status='held' AND hold_until >= now()) OR status='sold')`,
-      [eventId, seatIds, userId]
-    );
-    return res.rowCount === seatIds.length;
+    const ids = [...new Set(seatIds)];
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const res = await client.query(
+        // Idempotent: a retry after a lost response (timeout) must still succeed, so already-sold-to-this-user counts.
+        `UPDATE seats SET status='sold', hold_until=NULL
+         WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3
+           AND ((status='held' AND hold_until >= now()) OR status='sold')`,
+        [eventId, ids, userId]
+      );
+      // A partial match must not sell the seats that did match while reporting failure to the caller.
+      if (res.rowCount !== ids.length) {
+        await client.query("ROLLBACK");
+        return false;
+      }
+      await client.query("COMMIT");
+      return true;
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw e;
+    } finally {
+      client.release();
+    }
   }
 
   async availability(eventId: number): Promise<{ free: number; held: number; sold: number }> {

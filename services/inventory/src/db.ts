@@ -1,17 +1,16 @@
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createPool as createSharedPool, DEFAULT_DATABASE_URL, migrate as migrateDir } from "@boxoffice/platform";
 import { Pool } from "pg";
 
-export const DEFAULT_URL = "postgres://lab:lab@localhost:55432/lab";
+export const DEFAULT_URL = DEFAULT_DATABASE_URL;
 
 /** statementTimeoutMs 0 disables it: migrations and seeding are bulk operations, not request traffic. */
 export function createPool(max = Number(process.env.PG_POOL ?? 20), statementTimeoutMs = 5000): Pool {
-  return new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_URL, max, connectionTimeoutMillis: 2000, statement_timeout: statementTimeoutMs });
+  return createSharedPool({ max, statementTimeoutMs, applicationName: "inventory" });
 }
 
 export async function migrate(pool: Pool): Promise<void> {
-  const sql = readFileSync(join(__dirname, "..", "migrations", "001_init.sql"), "utf8");
-  await pool.query(sql);
+  await migrateDir(pool, join(__dirname, "..", "migrations"));
 }
 
 export async function seed(pool: Pool, eventId: number, seats: number): Promise<void> {

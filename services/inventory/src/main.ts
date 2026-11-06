@@ -1,15 +1,38 @@
 import "reflect-metadata";
 import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, NestFastifyApplication } from "@nestjs/platform-fastify";
+import { createPool as createSharedPool, createShutdown, drainHttp, initService, loadConfigOrExit, pgCheck, Readiness, shutdownEnv, wireNest } from "@boxoffice/platform";
+import { Pool } from "pg";
 import { AppModule } from "./app.module";
 import { createPool, migrate, seed } from "./db";
+import { PG } from "./inventory.service";
 
 async function bootstrap() {
-  const pool = createPool(2, 0);
+  const log = initService("inventory");
+  const cfg = loadConfigOrExit((e) => ({
+    port: e.port("PORT", 3101),
+    pgPool: e.int("PG_POOL", 20, { min: 1 }),
+    seedSeats: e.int("SEED_SEATS", 0, { min: 0 }),
+    shutdown: shutdownEnv(e)
+  }));
+  const pool = createPool(2, 0); // migrations and seeding: no statement timeout
   await migrate(pool);
-  if (process.env.SEED_SEATS) await seed(pool, 1, Number(process.env.SEED_SEATS));
+  if (cfg.seedSeats) await seed(pool, 1, cfg.seedSeats);
   await pool.end();
+
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), { logger: ["error"] });
-  await app.listen(Number(process.env.PORT ?? 3101), "0.0.0.0");
+  // Readiness uses its own single connection, so a saturated work pool cannot flap readiness and pull every instance out at once.
+  const healthPool = createSharedPool({ max: 1, applicationName: "inventory-health" });
+  const readiness = new Readiness([pgCheck(healthPool)], { cacheMs: 1000 });
+  wireNest(app, readiness);
+
+  const shutdown = createShutdown({ ...cfg.shutdown, readiness });
+  shutdown.add("http server (stop accepting, drain in-flight)", () => drainHttp(app.getHttpServer(), () => app.close()));
+  const workPool = app.get<Pool>(PG);
+  shutdown.add("postgres pools", async () => { await Promise.all([workPool.end(), healthPool.end()]); });
+  shutdown.install();
+
+  await app.listen(cfg.port, "0.0.0.0");
+  log.info("listening", { port: cfg.port });
 }
-bootstrap();
+bootstrap().catch((e) => { console.error(e); process.exit(1); });
