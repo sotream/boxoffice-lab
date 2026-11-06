@@ -1,5 +1,7 @@
 # gateway: measured results
 
+*Measurement status: these figures were measured before `@boxoffice/platform` (metrics, JSON logging, trace context) existed, and have not been repeated. The inventory behind the gateway ran on PostgreSQL 17 at that time. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
+
 Setup: MacBook Air M1, Node 26, gateway on plain Fastify 5 in front of inventory (NestJS 12 / Fastify 5), all services, Postgres and Redis on one machine, k6 on the same machine.
 
 ## Overhead of the hop (`load/overhead.js`, 50 VUs, 15 s, GET availability)

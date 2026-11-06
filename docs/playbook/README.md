@@ -26,4 +26,4 @@ A paper design is never presented as proven. If a number cannot be derived or me
 6. [worked-scenarios/](worked-scenarios/): five paper designs with other load shapes (URL shortener, feed, ledger, event ingestion, file pipeline).
 7. [from-100-to-1m-users.md](from-100-to-1m-users.md): what to build first, what to postpone, build versus buy.
 
-Related: [numbers-to-know](../numbers-to-know.md), [failure drills](../failure-drills.md), [capacity CLI](../../packages/capacity).
+Related: [numbers-to-know](../numbers-to-know.md), [failure drills](../failure-drills.md), [ADR index](../adr-index.md) (every decision with its status), [operations](../operations.md) (SLIs, alerts, runbooks), [testing and invariant proofs](../testing.md), [capacity CLI](../../packages/capacity).

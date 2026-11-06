@@ -1,5 +1,7 @@
 # catalog: capacity
 
+*The measured figures quoted here come from the RESULTS.md of this service, taken before the metrics/logging of `@boxoffice/platform` existed and (where Postgres is involved) on PostgreSQL 17; they have not been re-measured. See the measurement status at the top of [RESULTS.md](RESULTS.md).*
+
 ## Traffic
 - 1M DAU x 10 searches/day = 10M/day -> avg **116 RPS** (10M / 86 400). Peak factor 10 (evening, on-sale announcements) -> 1 157 RPS exactly, rounded to **~1 200 RPS** below.
 - Read/write ratio ~100:1: events change rarely, which is why caching is cheap to get right.

@@ -1,5 +1,7 @@
 # notifications: measured results
 
+*Measurement status: these figures were measured before `@boxoffice/platform` (metrics, JSON logging, trace context, graceful shutdown, DLQ routing of malformed events) existed, with Postgres 17 in the Docker setup of that time, and have not been repeated on PostgreSQL 18 or with the instrumentation. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
+
 Setup: MacBook Air M1, Redpanda (3 partitions) and Postgres in Docker. `load/bench.js` produces 21 010 events: 20 000 unique, 1 000 duplicate deliveries, 10 poison messages (invalid JSON). 10% of events are `payment.failed` (push only). Fake provider with 20 ms latency; every 201st event's email fails twice before succeeding.
 
 | Partitions consumed at once | Time | Deliveries/s |

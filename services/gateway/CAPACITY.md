@@ -1,5 +1,7 @@
 # gateway: capacity
 
+*The measured figures quoted here come from the RESULTS.md of this service, taken before the metrics/logging of `@boxoffice/platform` existed and (where Postgres is involved) on PostgreSQL 17; they have not been re-measured. See the measurement status at the top of [RESULTS.md](RESULTS.md).*
+
 ## Limits are derived, not guessed
 - Per-user hold limit: a human clicks ~1/s; allow **5/s, burst 10** (a script doing 100/s is cut off at the edge).
 - Per-IP limit: office NATs and mobile carriers share IPs, so it must be generous: **50/s, burst 100** per IP is a safety net against floods, not the fairness mechanism (the waiting room is).

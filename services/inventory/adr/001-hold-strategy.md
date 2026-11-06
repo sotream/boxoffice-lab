@@ -12,8 +12,8 @@
 | Serializable isolation | Correct but needs retry loops on serialization failures; heavier than needed for single-row predicates. |
 
 ## Details that matter
-- `for-update` locks rows with an explicit `ORDER BY seat_id`, so two requests for `[4,5]` and `[5,4]` lock in the same order and cannot deadlock. `atomic-update` sorts ids in the application, but its single `UPDATE ... WHERE seat_id = ANY(...)` has no `ORDER BY`, so lock order follows the query plan; the concurrency test passes for the plan used, which is evidence, not a guarantee.
-- Multi-seat holds are all-or-nothing: compare `rowCount` with the number requested, else rollback.
+- `for-update` locks rows with an explicit `ORDER BY seat_id`, so two requests for `[4,5]` and `[5,4]` lock in the same order and cannot deadlock. `atomic-update` was first a bare `UPDATE ... WHERE seat_id = ANY(...)`, whose lock order follows the query plan; a hold and a confirm under different plans deadlocked (`40P01`, reproduced by `lockorder.test.ts`). **Update 2026-11-06:** hold and confirm now lock their rows first, in `seat_id` order, inside the same statement (`WITH locked AS MATERIALIZED (... ORDER BY seat_id FOR UPDATE) UPDATE ... FROM locked`). Still one statement and one round trip; the measured 2 654 hold RPS predates this change and has not been re-measured.
+- Multi-seat holds are all-or-nothing: compare `rowCount` with the number requested, else rollback. `confirm` is too: it runs in a transaction and rolls back unless every requested seat matched (a property test found a version that sold the matching seats and still answered false; see [testing](../../../docs/testing.md#bugs-found-by-these-tests)).
 - Expiry is lazy: an expired hold is treated as free inside the WHERE clause. No sweeper job to fail.
 
 ## Consequences

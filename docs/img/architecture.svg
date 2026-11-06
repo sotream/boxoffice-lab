@@ -99,5 +99,6 @@
   <path class="e" d="M610 485 H680" marker-end="url(#a)"/>
   <path class="e" d="M780 530 V560" marker-end="url(#a)"/>
   <text class="l" x="790" y="550">after 4 attempts</text>
-  <text class="l" x="20" y="595">MacBook Air M1, k6 on the same machine: per-instance planning numbers.</text>
+  <text class="l" x="20" y="581">MacBook Air M1, k6 on the same machine: per-instance planning numbers, measured on PostgreSQL 17</text>
+  <text class="l" x="20" y="597">before metrics and logging existed; payments 561/s predates the REFUNDING step and is to be re-measured.</text>
 </svg>

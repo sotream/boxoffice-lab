@@ -23,4 +23,6 @@ Measured: availability stayed at 0 errors through a 10 s Redis outage; recovery 
 
 # ADR 002: signed admission token instead of a Redis lookup
 
+**Status:** accepted.
+
 Checking `admitted:{user}` in Redis on every hold costs a round trip on the hottest path and couples the gateway to the queue's storage. An HMAC token is verified in microseconds, carries its own expiry, and binds user and event. Trade-off: revocation is impossible before expiry (5 min). Acceptable; a revoked user can still only hold seats at the per-user rate limit. The secret must be rotated with an overlap window (accept two keys).

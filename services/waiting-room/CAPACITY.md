@@ -1,5 +1,7 @@
 # waiting-room: capacity
 
+*The measured figures quoted here come from the RESULTS.md of this service, taken before the metrics/logging of `@boxoffice/platform` existed and (where Postgres is involved) on PostgreSQL 17; they have not been re-measured. See the measurement status at the top of [RESULTS.md](RESULTS.md).*
+
 ## The key formula: admission rate
 admit/s = protected capacity x headroom / attempts per admitted user
 - `inventory` measured 2 654 hold RPS per instance (planning figure 2 600, rounded down). One instance, headroom 0.6 -> 1 560 holds/s (2 654 x 0.6 = 1 592 unrounded).

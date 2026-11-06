@@ -1,5 +1,7 @@
 # payments: measured results
 
+*Measurement status: these figures were measured on PostgreSQL 17, before `@boxoffice/platform` (metrics, JSON logging, trace context) existed and before the REFUNDING claim (ADR 005) added a commit to the compensation path that this run exercises. They have not been repeated; 561 and 904 payments/s are marked to-be-remeasured in [CAPACITY.md](CAPACITY.md). Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
+
 Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5, Postgres 17 and Redpanda in Docker, pool 20, k6 100 VUs, 20 s. Every 5th payment is retried with the same key. Seats are not held, so every payment takes the **compensation path** (charge, failed confirm, refund): the longest saga path.
 
 | PSP latency | RPS (incl. retries) | p50 ms | p95 ms | p99 ms |
