@@ -93,6 +93,20 @@ describe("compensation and compare-and-set", () => {
   });
 });
 
+describe("stale view", () => {
+  it("a runner that loses PENDING -> CHARGED stops and does not confirm or refund", async () => {
+    const psp = new FakePsp(100);
+    let confirms = 0;
+    const svc = new PaymentsService(pool, psp, async () => { confirms++; return false; });
+    const running = svc.pay(req("k9"));
+    await new Promise((r) => setTimeout(r, 30)); // the charge is in flight
+    await pool.query("UPDATE payments.payments SET status='CONFIRMED' WHERE id=1"); // another runner finished the saga
+    expect((await running).payment.status).toBe("CONFIRMED");
+    expect(confirms).toBe(0);
+    expect(psp.refundCalls).toBe(0);
+  });
+});
+
 describe("timeouts", () => {
   it("slow PSP: caller gets in-progress quickly, sweeper finishes it, one charge", async () => {
     const psp = new FakePsp(300);

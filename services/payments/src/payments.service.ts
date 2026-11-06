@@ -80,7 +80,8 @@ export class PaymentsService {
     if (p.status === "PENDING") {
       const c = await this.within(this.psp.charge(p.idempotency_key, p.amount_cents));
       if (!c.ok) return this.transition(id, "PENDING", "FAILED", "payment.failed", p);
-      await this.transition(id, "PENDING", "CHARGED", null, p);
+      const moved = await this.transition(id, "PENDING", "CHARGED", null, p);
+      if (moved.status !== "CHARGED") return moved; // another runner got there first: do not continue on a stale view
       if (this.crashAt === "after-charge") throw new Error("crash after charge");
       p = { ...p, status: "CHARGED" };
     }
@@ -99,30 +100,29 @@ export class PaymentsService {
     return { id, status: p.status };
   }
 
-  /** Compare-and-set state change plus outbox row in a single transaction. */
+  /** Compare-and-set state change plus outbox row in a single transaction. If the compare-and-set is lost, returns the stored state. */
   private async transition(id: number, from: string, to: string, event: string | null, p: PaymentRow): Promise<PaymentView> {
+    let won = false;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       const r = await client.query("UPDATE payments.payments SET status=$3, updated_at=now() WHERE id=$1 AND status=$2", [id, from, to]);
-      if (r.rowCount === 1 && event) {
+      won = r.rowCount === 1;
+      if (won && event) {
         await client.query(
           "INSERT INTO payments.outbox (topic, key, payload) VALUES ('payments', $1, $2)",
           [String(id), JSON.stringify({ eventType: event, paymentId: id, userId: p.user_id, eventId: p.event_id, seatIds: p.seat_ids, amountCents: p.amount_cents })]
         );
       }
       await client.query("COMMIT");
-      if (r.rowCount === 0) {
-        // Lost the compare-and-set: another runner moved the saga first. Report the stored state, not the one we wanted.
-        const cur = (await this.pool.query("SELECT status FROM payments.payments WHERE id=$1", [id])).rows[0];
-        return { id, status: cur.status };
-      }
     } catch (e) {
       await client.query("ROLLBACK").catch(() => undefined);
       throw e;
     } finally {
-      client.release();
+      client.release(); // released before any further query: never wait for a second connection while holding one
     }
-    return { id, status: to };
+    if (won) return { id, status: to };
+    const cur = (await this.pool.query("SELECT status FROM payments.payments WHERE id=$1", [id])).rows[0];
+    return { id, status: cur.status };
   }
 }
