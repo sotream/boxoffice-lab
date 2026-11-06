@@ -4,7 +4,7 @@ Each drill breaks one dependency while the system is under traffic and records w
 
 | # | Drill | Expected | Observed | What changed in the code |
 |---|---|---|---|---|
-| 1 | Redis stopped for 10 s under traffic on the gateway | degraded service | v1: **100% errors** for the whole outage, each request hung until the 2 s client timeout; v2: **0 errors** on availability, holds/queue return a fast 503 | fail-fast Redis client (no offline queue, 200 ms timeout), per-route fail-open/closed policy |
+| 1 | Redis stopped for 10 s under traffic on the gateway | degraded service | v1: **100% errors** for the whole outage, each request hung until the drill script's own 2 s abort (the service itself had no timeout, which was the problem); v2: **0 errors** on availability, holds/queue return a fast 503 | fail-fast Redis client (no offline queue, 200 ms timeout), per-route fail-open/closed policy |
 | 2 | Redpanda (Kafka) stopped while 300 payments are made | payments keep working, events not lost | 300/300 payments OK in 0.7 s; 300 events buffered in the outbox; **caught up 1.2 s** after the broker returned; topic grew by exactly 300 | none needed: this is what the outbox is for |
 | 3 | Notifications consumer SIGKILLed at 6 492 / 12 000 deliveries | no loss, no duplicates | restarted consumer finished all **12 000 / 12 000**, 0 duplicate rows, 0 rows stuck; took 33.6 s because 25 claims were mid-send and wait out the 30 s lease | none: lease expiry is the designed recovery path |
 

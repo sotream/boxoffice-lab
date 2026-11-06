@@ -11,4 +11,4 @@
 - Redis limiter load: 1 Lua call per request = 12 500 ops/s, ~12% of a single Redis node (~100k ops/s).
 
 ## Connections (a lesson from the lab)
-- 2 000 simultaneous new connections made ~3.5% of joins fail with connection reset on the default listen backlog. Fix: `backlog: 4096` (the OS `somaxconn` / accept queue is a real capacity limit). Also in production: keep-alive, and a load balancer in front.
+- 2 000 simultaneous new connections made joins fail with connection reset on the default listen backlog: 72 of 2 000 (3.6%) in an isolated join burst, and 289 resets in the first full flash-sale run where polling added load (two separate runs, see RESULTS.md). Fix: `backlog: 4096` (the OS `somaxconn` / accept queue is a real capacity limit). Also in production: keep-alive, and a load balancer in front.

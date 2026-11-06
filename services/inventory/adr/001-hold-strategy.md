@@ -12,7 +12,7 @@
 | Serializable isolation | Correct but needs retry loops on serialization failures; heavier than needed for single-row predicates. |
 
 ## Details that matter
-- Seat ids are sorted before locking so two requests for `[4,5]` and `[5,4]` cannot deadlock (tested).
+- `for-update` locks rows with an explicit `ORDER BY seat_id`, so two requests for `[4,5]` and `[5,4]` lock in the same order and cannot deadlock. `atomic-update` sorts ids in the application, but its single `UPDATE ... WHERE seat_id = ANY(...)` has no `ORDER BY`, so lock order follows the query plan; the concurrency test passes for the plan used, which is evidence, not a guarantee.
 - Multi-seat holds are all-or-nothing: compare `rowCount` with the number requested, else rollback.
 - Expiry is lazy: an expired hold is treated as free inside the WHERE clause. No sweeper job to fail.
 
