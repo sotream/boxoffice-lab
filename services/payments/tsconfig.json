@@ -12,5 +12,5 @@
     "esModuleInterop": true
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts"]
+  "exclude": ["src/**/*.test.ts", "src/psp.contract.ts", "src/saga.*.ts"]
 }

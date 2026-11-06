@@ -1,6 +1,17 @@
 import { Pool } from "pg";
 
-export type Publish = (topic: string, messages: { key: string; value: string }[]) => Promise<void>;
+export interface OutMessage { key: string; value: string; headers?: Record<string, string> }
+export type Publish = (topic: string, messages: OutMessage[]) => Promise<void>;
+
+/** Kafka headers from the correlation fields the payment path stored in the payload (`trace`), if any. */
+export function traceHeaders(payload: unknown): Record<string, string> | undefined {
+  const t = (payload as { trace?: { requestId?: unknown; traceparent?: unknown } } | null)?.trace;
+  if (!t) return undefined;
+  const h: Record<string, string> = {};
+  if (typeof t.requestId === "string") h["x-request-id"] = t.requestId;
+  if (typeof t.traceparent === "string") h["traceparent"] = t.traceparent;
+  return Object.keys(h).length ? h : undefined;
+}
 
 /**
  * Polls the outbox and publishes to the broker. At-least-once: if we crash after publish but before
@@ -18,10 +29,10 @@ export class OutboxRelay {
         `SELECT id, topic, key, payload FROM payments.outbox WHERE published_at IS NULL
          ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, [this.batch])).rows;
       if (rows.length === 0) { await client.query("COMMIT"); return 0; }
-      const byTopic = new Map<string, { key: string; value: string }[]>();
+      const byTopic = new Map<string, OutMessage[]>();
       for (const r of rows) {
         const list = byTopic.get(r.topic) ?? [];
-        list.push({ key: r.key, value: JSON.stringify({ outboxId: r.id, ...r.payload }) });
+        list.push({ key: r.key, value: JSON.stringify({ outboxId: r.id, ...r.payload }), headers: traceHeaders(r.payload) });
         byTopic.set(r.topic, list);
       }
       for (const [topic, msgs] of byTopic) await this.publish(topic, msgs);
