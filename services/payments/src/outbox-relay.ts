@@ -32,7 +32,8 @@ export class OutboxRelay {
       const byTopic = new Map<string, OutMessage[]>();
       for (const r of rows) {
         const list = byTopic.get(r.topic) ?? [];
-        list.push({ key: r.key, value: JSON.stringify({ outboxId: r.id, ...r.payload }), headers: traceHeaders(r.payload) });
+        // r.id is a bigserial, which pg returns as a string; the consumer contract is a JSON number and it dead-letters anything else.
+        list.push({ key: r.key, value: JSON.stringify({ outboxId: Number(r.id), ...r.payload }), headers: traceHeaders(r.payload) });
         byTopic.set(r.topic, list);
       }
       for (const [topic, msgs] of byTopic) await this.publish(topic, msgs);
