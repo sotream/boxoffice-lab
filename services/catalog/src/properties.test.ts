@@ -285,7 +285,7 @@ describe("search input fuzz: no 5xx, no injection", () => {
   });
 
   it("event ids: non-numeric and huge ids are 4xx or 404, never 5xx", async () => {
-    for (const id of ["abc", "-1", "0", "1.5", "99999999999999999999", "1e3", "%00"]) {
+    for (const id of ["abc", "-1", "0", "1.5", "-3000000000", "99999999999999999999", "1e3", "%00"]) {
       const res = await app.inject({ method: "GET", url: `/events/${id}` });
       expect(res.statusCode, `id=${id} -> ${res.body.slice(0, 100)}`).toBeLessThan(500);
     }

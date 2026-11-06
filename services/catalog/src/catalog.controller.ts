@@ -20,7 +20,7 @@ export class CatalogController {
 
   @Get("events/:id")
   async get(@Param("id", ParseIntPipe) id: number) {
-    if (id > 2_147_483_647) throw new NotFoundException(); // beyond int4: no such row, and the query would fail with a 500
+    if (id > 2_147_483_647 || id < -2_147_483_648) throw new NotFoundException(); // outside int4 in either direction: no such row, and the query would fail with a 500
     const e = await this.cache.getOrLoad(`event:${id}`, () => this.svc.get(id));
     if (!e) throw new NotFoundException();
     return e;
