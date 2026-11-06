@@ -433,5 +433,104 @@
       "regression: valid JSON"
     ],
     "description": "JSON null reaches the handler (endless batch failure)"
+  },
+  {
+    "id": "pay-stale-after-charge",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "      if (moved.status !== \"CHARGED\") return moved; // another runner got there first: do not continue on a stale view\n",
+    "replace": "",
+    "expectFailingTests": [
+      "a runner that loses PENDING -> CHARGED stops"
+    ],
+    "description": "a runner that lost the PENDING to CHARGED race keeps going on a stale view"
+  },
+  {
+    "id": "pay-sweeper-skips-refunding",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "status IN ('PENDING','CHARGED','REFUNDING')",
+    "replace": "status IN ('PENDING','CHARGED')",
+    "expectFailingTests": [
+      "REFUNDING"
+    ],
+    "description": "sweeper no longer resumes sagas stuck in REFUNDING"
+  },
+  {
+    "id": "pay-refund-key-unique",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "`refund:${p.idempotency_key}`",
+    "replace": "`refund:${p.idempotency_key}:${Math.random()}`",
+    "expectFailingTests": [
+      "crash after refund"
+    ],
+    "description": "refund idempotency key differs per attempt, so a retry refunds twice"
+  },
+  {
+    "id": "pay-lost-cas-writes-event",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "if (won && event) {",
+    "replace": "if (event) {",
+    "expectFailingTests": [
+      "lost compare-and-set"
+    ],
+    "description": "a runner that lost the compare-and-set still writes the outbox event"
+  },
+  {
+    "id": "pay-refunding-is-final",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "return s === \"CONFIRMED\" || s === \"REFUNDED\" || s === \"FAILED\"; }",
+    "replace": "return s === \"CONFIRMED\" || s === \"REFUNDED\" || s === \"FAILED\" || s === \"REFUNDING\"; }",
+    "expectFailingTests": [
+      "REFUNDING"
+    ],
+    "description": "pay() reports a refund that is still in flight as final"
+  },
+  {
+    "id": "pay-trace-not-stored",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "JSON.stringify(traceFields() ?? null)",
+    "replace": "JSON.stringify(null)",
+    "expectFailingTests": [
+      "keeps the original trace"
+    ],
+    "description": "the request trace is not stored on the payment row"
+  },
+  {
+    "id": "pay-relay-id-string",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/outbox-relay.ts",
+    "find": "outboxId: Number(r.id)",
+    "replace": "outboxId: r.id",
+    "expectFailingTests": [
+      "publishes outboxId as a JSON number"
+    ],
+    "description": "outbox id published as a string and dead-lettered by notifications"
+  },
+  {
+    "id": "gw-user-mismatch",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "if (bodyUser !== who.userId)",
+    "replace": "if (false)",
+    "expectFailingTests": [
+      "cannot hold or confirm seats as somebody else"
+    ],
+    "description": "gateway forwards a body whose userId differs from the admission token"
+  },
+  {
+    "id": "inv-atomic-lock-order",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "             AND (status='free' OR (status='held' AND hold_until < now()))\n           ORDER BY seat_id FOR UPDATE)",
+    "replace": "             AND (status='free' OR (status='held' AND hold_until < now()))\n           )",
+    "expectFailingTests": [
+      "never deadlock"
+    ],
+    "description": "atomic hold no longer locks rows in seat_id order first"
   }
 ]
