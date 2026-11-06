@@ -1,0 +1,88 @@
+import { Pool } from "pg";
+import { Psp } from "./psp";
+
+export type ConfirmSeats = (eventId: number, seatIds: number[], userId: string) => Promise<boolean>;
+export interface PaymentRequest { idempotencyKey: string; eventId: number; userId: string; seatIds: number[]; amountCents: number }
+export type PaymentView = { id: number; status: string };
+export type Outcome = { kind: "done"; payment: PaymentView } | { kind: "in-progress"; payment: PaymentView };
+
+/**
+ * Orchestrated saga: PENDING -> (charge) CHARGED -> (confirm seats) CONFIRMED,
+ * or, when the hold expired, CHARGED -> (compensate) REFUNDED.
+ * Every state change and its event are one DB transaction (outbox), so a crash never leaves
+ * "state changed but event lost". `resume` continues from the stored state after a crash.
+ * The PSP is called with the idempotency key, so a retry after a crash cannot charge twice.
+ */
+export class PaymentsService {
+  /** Test hook: throw to simulate a crash at a named step. */
+  crashAt?: "after-charge" | "after-confirm";
+
+  constructor(private readonly pool: Pool, private readonly psp: Psp, private readonly confirmSeats: ConfirmSeats) {}
+
+  async pay(req: PaymentRequest): Promise<Outcome> {
+    const ins = await this.pool.query(
+      `INSERT INTO payments.payments (idempotency_key, event_id, user_id, seat_ids, amount_cents)
+       VALUES ($1,$2,$3,$4,$5) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id, status`,
+      [req.idempotencyKey, req.eventId, req.userId, req.seatIds, req.amountCents]
+    );
+    if (ins.rowCount === 0) {
+      // Same key seen before: return the stored result, never charge again.
+      const existing = (await this.pool.query("SELECT id, status FROM payments.payments WHERE idempotency_key=$1", [req.idempotencyKey])).rows[0];
+      return this.isFinal(existing.status) ? { kind: "done", payment: existing } : { kind: "in-progress", payment: existing };
+    }
+    return { kind: "done", payment: await this.run(ins.rows[0].id) };
+  }
+
+  /** Continue the saga from whatever state is stored. Safe to call repeatedly. */
+  async resume(id: number): Promise<PaymentView> {
+    return this.run(id);
+  }
+
+  private isFinal(s: string) { return s === "CONFIRMED" || s === "REFUNDED" || s === "FAILED"; }
+
+  private async run(id: number): Promise<PaymentView> {
+    let p = (await this.pool.query("SELECT * FROM payments.payments WHERE id=$1", [id])).rows[0];
+
+    if (p.status === "PENDING") {
+      const c = await this.psp.charge(p.idempotency_key, p.amount_cents);
+      if (!c.ok) return this.transition(id, "PENDING", "FAILED", "payment.failed", p);
+      await this.transition(id, "PENDING", "CHARGED", null, p);
+      if (this.crashAt === "after-charge") throw new Error("crash after charge");
+      p = { ...p, status: "CHARGED" };
+    }
+
+    if (p.status === "CHARGED") {
+      const ok = await this.confirmSeats(p.event_id, p.seat_ids, p.user_id);
+      if (this.crashAt === "after-confirm") throw new Error("crash after confirm");
+      if (ok) return this.transition(id, "CHARGED", "CONFIRMED", "payment.confirmed", p);
+      // Compensation: hold expired or was lost, give the money back.
+      const c = await this.psp.charge(p.idempotency_key, p.amount_cents); // idempotent: returns the existing charge id
+      if (c.chargeId) await this.psp.refund(c.chargeId);
+      return this.transition(id, "CHARGED", "REFUNDED", "payment.refunded", p);
+    }
+
+    return { id, status: p.status };
+  }
+
+  /** Compare-and-set state change plus outbox row in a single transaction. */
+  private async transition(id: number, from: string, to: string, event: string | null, p: any): Promise<PaymentView> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const r = await client.query("UPDATE payments.payments SET status=$3, updated_at=now() WHERE id=$1 AND status=$2", [id, from, to]);
+      if (r.rowCount === 1 && event) {
+        await client.query(
+          "INSERT INTO payments.outbox (topic, key, payload) VALUES ('payments', $1, $2)",
+          [String(id), JSON.stringify({ eventType: event, paymentId: id, userId: p.user_id, eventId: p.event_id, seatIds: p.seat_ids, amountCents: p.amount_cents })]
+        );
+      }
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw e;
+    } finally {
+      client.release();
+    }
+    return { id, status: to };
+  }
+}

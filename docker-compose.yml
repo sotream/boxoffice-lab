@@ -14,3 +14,15 @@ services:
   redis:
     image: redis:7-alpine
     ports: ["56379:6379"]
+  redpanda:
+    image: redpandadata/redpanda:v24.2.7
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=PLAINTEXT://0.0.0.0:59092
+      - --advertise-kafka-addr=PLAINTEXT://localhost:59092
+    ports: ["59092:59092"]
