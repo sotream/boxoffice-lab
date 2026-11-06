@@ -4,5 +4,5 @@
   "private": true,
   "scripts": { "build": "tsc -p tsconfig.json", "start": "node dist/main.js", "test": "vitest run" },
   "dependencies": { "kafkajs": "^2.2.4", "pg": "^8.13.0" },
-  "devDependencies": { "@types/node": "^22.0.0", "@types/pg": "^8.11.0", "typescript": "^5.6.0", "vitest": "^2.1.0" }
+  "devDependencies": { "@types/node": "^22.0.0", "@types/pg": "^8.11.0", "typescript": "^5.6.0", "vitest": "^5.1.0" }
 }
