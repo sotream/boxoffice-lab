@@ -29,7 +29,7 @@
 </p>
 
 
-| 6 services | 14 ADRs | 5 failure drills | 46 mutations, 46 killed | 5 paper designs |
+| 6 services | 14 ADRs | 5 failure drills | 50 mutations, 50 killed | 5 paper designs |
 |:---:|:---:|:---:|:---:|:---:|
 | inventory, waiting-room, gateway, payments, notifications, catalog | [indexed with status](docs/adr-index.md) | broker, cache, consumer, provider down or slow; DLQ replay | [mutation check of the tests](docs/testing.md#mutation-check) | URL shortener, feed, ledger, ingestion, file pipeline |
 
@@ -54,7 +54,7 @@ The headline claims are correctness claims, and each has a test that tries to br
 | The payments saga never double-charges, double-refunds or loses an event, whatever crashes | crash injected at 8 boundaries, a reusable PSP contract suite, model-based test with random crashes and 1 to 4 concurrent runners; `REFUNDING` is claimed before the refund ([ADR 005](services/payments/adr/005-claim-refund-before-issuing-it.md)) | `pnpm --filter @boxoffice/payments test` |
 | Notifications are delivered at least once with no duplicate effects; poison messages never block a partition | random duplicates, redeliveries and flaky providers; the real consumer against a fake broker | `pnpm --filter @boxoffice/notifications test` |
 | The cache never serves wrong data | TTL jitter bounds, unambiguous keys, input fuzz with no 5xx | `pnpm --filter @boxoffice/catalog test` |
-| The tests themselves catch real breakage | a dependency-free mutation runner breaks the production code one way at a time and requires a named test to fail: 46 mutations in `scripts/mutations.json`, 46 killed on the last run (2026-11-06) | `pnpm test:mutation` (about 8 minutes, edits and restores source files) |
+| The tests themselves catch real breakage | a dependency-free mutation runner breaks the production code one way at a time and requires a named test to fail: 50 mutations in `scripts/mutations.json`, 50 killed on the last run (2026-11-06) | `pnpm test:mutation` (about 8 minutes, edits and restores source files) |
 | The whole pipeline keeps its invariants, including through `kill -9` | `packages/e2e` starts the real built services as processes (private Postgres database, Redis logical DB and Kafka topic), runs a 300-user flash sale, the same sale with `kill -9` of payments and of the notifications consumer, and a limiter-overload storm, then reads the databases: no seat sold twice, sold seats equal confirmed payments, money conserved, one outbox event per payment, no duplicate deliveries, request id present end to end. It found a bug no unit test had: every real event was dead-lettered because the outbox id was a string. Details and limits: [docs/e2e.md](docs/e2e.md) | `pnpm test:e2e` (about 2.5 minutes, needs Redpanda) |
 | The system degrades the way the docs say | five failure drills with raw output saved in [`docs/drill-output/`](docs/drill-output/) | [docs/failure-drills.md](docs/failure-drills.md) |
 | Alert rules and runbooks match the code | `pnpm ops:check` fails if an alert names a metric or label no service defines, or the metric table is stale | `pnpm ops:check` |
@@ -131,7 +131,7 @@ curl -s -X POST localhost:3100/events/1/queue/join -H 'content-type: application
 curl -s 'localhost:3100/events/1/queue/status?userId=alice'      # {"state":"admitted","ttl":...,"token":"..."} within a moment
 curl -s -X POST localhost:3100/events/1/holds -H 'content-type: application/json' -H "x-admission: $TOKEN" -d '{"seatIds":[1,2],"userId":"alice"}'
 curl -s -X POST localhost:3103/payments -H 'content-type: application/json' -H 'Idempotency-Key: k1' -d '{"eventId":1,"userId":"alice","seatIds":[1,2],"amountCents":5000}'   # CONFIRMED
-curl -s localhost:3100/readyz; curl -s localhost:3101/metrics | head
+curl -s localhost:3106/readyz; curl -s localhost:3101/metrics | head
 ```
 
 Optional: `docker compose --profile observability up -d prometheus grafana` starts Prometheus (127.0.0.1:59090, with the alert rules of [`ops/alerts.yml`](ops/alerts.yml)) and Grafana (127.0.0.1:53000) scraping the services on the host; see [docs/operations.md](docs/operations.md).
@@ -156,7 +156,7 @@ Load scripts and drills write to the shared databases and stop containers: do no
 
 | Service | Port | Business endpoints | Ops endpoints |
 |---|---|---|---|
-| gateway | 3100 | `/events/:id/queue/join`, `/events/:id/queue/status`, `/events/:id/availability`, `/events/:id/holds`, `/events/:id/confirm` | `/healthz` `/readyz` `/metrics` |
+| gateway | 3100 | `/events/:id/queue/join`, `/events/:id/queue/status`, `/events/:id/availability`, `/events/:id/holds`, `/events/:id/confirm` | none on 3100; ops endpoints on 3106 (`OPS_PORT`) |
 | inventory | 3101 | `POST /events/:id/holds`, `POST /events/:id/confirm`, `GET /events/:id/availability` | same |
 | waiting-room | 3102 | `POST /events/:id/queue/join`, `GET /events/:id/queue/status` | same |
 | payments | 3103 | `POST /payments` (header `Idempotency-Key`), `POST /admin/psp` (only with `PSP_ADMIN=1`) | same |
@@ -174,7 +174,7 @@ Each service validates its environment at start and exits with code 78 and one m
 | Variable | Used by | Default |
 |---|---|---|
 | `PORT` | gateway, inventory, waiting-room, payments, catalog | 3100, 3101, 3102, 3103, 3104 |
-| `OPS_PORT` | notifications | 3105 |
+| `OPS_PORT` | notifications, gateway | 3105, 3106 |
 | `DATABASE_URL` | inventory, payments, catalog, notifications (via `@boxoffice/platform`) | `postgres://lab:lab@localhost:55432/lab` |
 | `PG_POOL` | inventory, payments, catalog | 20 |
 | `REDIS_URL` | gateway, waiting-room, catalog | `redis://localhost:56379` |

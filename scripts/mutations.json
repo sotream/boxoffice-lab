@@ -534,5 +534,49 @@
       "invariant: no seat is held"
     ],
     "description": "atomic hold no longer locks rows in seat_id order first"
+  },
+  {
+    "id": "pay-confirm-4xx-refund",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/confirm-seats.ts",
+    "find": "if (res.status === 409) return false;",
+    "replace": "if (res.status >= 400) return false;",
+    "expectFailingTests": [
+      "is a contract bug"
+    ],
+    "description": "any 4xx from inventory is treated as lost seats and refunds a valid payment"
+  },
+  {
+    "id": "pay-sweep-swallows",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "if (r.status === \"rejected\") this.onSweepError?.(batch[k], r.reason);",
+    "replace": "",
+    "expectFailingTests": [
+      "reported, not swallowed"
+    ],
+    "description": "sweeper discards the failures of sagas it could not advance"
+  },
+  {
+    "id": "pay-seats-validation",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.controller.ts",
+    "find": "v.length >= 1 && v.length <= 8 &&",
+    "replace": "",
+    "expectFailingTests": [
+      "is a 400"
+    ],
+    "description": "controller accepts empty or oversized seat lists and charges the card"
+  },
+  {
+    "id": "not-dlq-count-before-send",
+    "package": "@boxoffice/notifications",
+    "file": "services/notifications/src/consumer.ts",
+    "find": "              dlqCounter.inc(); // after the send: a failed publish is redelivered and must not be counted each time\n",
+    "replace": "",
+    "expectFailingTests": [
+      "counts messages that were published"
+    ],
+    "description": "the DLQ counter is never incremented"
   }
 ]

@@ -12,7 +12,7 @@ Everything here is checked against the code where that is cheap: `node ops/check
 | `GET /readyz` | Readiness: should traffic be sent here. 200, or 503 with a per-dependency JSON body (`{"status":"not_ready","checks":{"postgres":{"ok":false,"critical":true,"latencyMs":1000,"error":"postgres timed out after 1000 ms"}}}`) | Postgres / Redis / Kafka, 1 s timeout each, result cached 1 s |
 | `GET /metrics` | Prometheus text format | Postgres only for the payments gauges (below) |
 
-Ports: gateway 3100, inventory 3101, waiting-room 3102, payments 3103, catalog 3104. The notifications consumer has no API, so a tiny server on `OPS_PORT` (default 3105) serves the same three endpoints; if that port is taken the consumer still runs and logs a warning.
+Ports: gateway 3100, inventory 3101, waiting-room 3102, payments 3103, catalog 3104. The notifications consumer has no API, so a tiny server on `OPS_PORT` (default 3105) serves the same three endpoints; if that port is taken the consumer still runs and logs a warning. The gateway is the internet-facing entry, so it serves the three endpoints only on its own ops listener, `OPS_PORT` (default 3106); its public port 3100 answers 404 for them (they expose limiter counters and raw dependency errors). If the gateway cannot bind its ops port it exits. Keep the ops ports off the public network.
 
 Liveness never touches a dependency, because restarting a healthy process does not repair a dead database. Probe endpoints are not counted in the request metrics, so health checks do not dilute the success ratio.
 
@@ -93,7 +93,7 @@ Every series also carries a `service` label (set once per process). Labels are b
 | `http_requests_total` | counter | `method`, `route`, `status_class` | gateway, inventory, waiting-room, payments, catalog | HTTP requests by route and status class. |
 | `inventory_confirms_total` | counter | `result` | inventory | Seat confirm attempts by result. |
 | `inventory_holds_total` | counter | `strategy`, `result` | inventory | Seat hold attempts by locking strategy and result. |
-| `notifications_consumer_lag_messages` | gauge | `partition` | notifications | Consumer lag per partition as of the last processed batch. |
+| `notifications_consumer_lag_messages` | gauge | `partition` | notifications | Consumer lag per partition (broker end offset minus committed offset), sampled every 10 s. |
 | `notifications_delivered_total` | counter | `channel` | notifications | Notifications delivered, by channel. |
 | `notifications_dlq_total` | counter | - | notifications | Messages published to the dead-letter topic. |
 | `notifications_duplicate_suppressed_total` | counter | `channel` | notifications | Duplicate deliveries suppressed by the per-channel dedup key. |
@@ -174,9 +174,9 @@ Symptom: `HoldLatency*Burn`. Metrics: `http_request_duration_seconds` for the ho
 
 Each service validates its environment at start and exits with code 78 and one message listing every problem (a non-numeric `PORT`, a malformed URL, a value out of range), instead of failing on the first or later at runtime. All existing variable names and defaults are unchanged. With `NODE_ENV=production`, `ADMISSION_SECRET` must be set and must not be the development default `dev-secret`; gateway and waiting-room refuse to start otherwise.
 
-New variables: `OPS_PORT` (notifications, 3105), `SHUTDOWN_DEADLINE_MS` (10000), `SHUTDOWN_DRAIN_DELAY_MS` (0), `LOG_LEVEL` (info).
+New variables: `OPS_PORT` (notifications 3105, gateway 3106), `SHUTDOWN_DEADLINE_MS` (10000), `SHUTDOWN_DRAIN_DELAY_MS` (0), `LOG_LEVEL` (info).
 
-Database pools come from one helper (`createPool` in `@boxoffice/platform`): 20 connections, 5 s statement timeout, 2 s wait for a connection, `application_name` per service (so `pg_stat_activity` shows who holds what), and an `error` handler (an idle client that loses its connection no longer crashes the process). Migrations and seeding run with the statement timeout off in every service, including payments and notifications, which used to run them under the 5 s limit.
+Database pools come from one helper (`createPool` in `@boxoffice/platform`): 20 connections, 5 s statement timeout, 2 s wait for a connection, `application_name` per service (so `pg_stat_activity` shows who holds what), and an `error` handler (an idle client that loses its connection no longer crashes the process). Migrations and seeding run with the statement timeout off in every service, including payments and notifications, which used to run them under the 5 s limit. `migrate(pool, dir)` applies each `migrations/*.sql` file once: applied files are recorded per service in `public.schema_migrations` (in the same transaction as the file) and a session advisory lock serialises instances that boot together. A database migrated before the tracking existed re-runs each file once, which the files tolerate because they are written to be idempotent.
 
 ## Graceful shutdown
 
