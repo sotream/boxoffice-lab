@@ -150,6 +150,15 @@ describe("outbox relay", () => {
     expect(sent).toHaveLength(5);
   });
 
+  it("publishes outboxId as a JSON number: pg returns bigserial as a string and the notifications consumer dead-letters anything but a safe integer", async () => {
+    const svc = new PaymentsService(pool, new FakePsp(), async () => true);
+    await svc.pay(req("num1"));
+    const values: string[] = [];
+    await new OutboxRelay(pool, async (_t, m) => { values.push(...m.map((x) => x.value)); }).drainOnce();
+    expect(values.length).toBeGreaterThan(0);
+    for (const v of values) { expect(typeof JSON.parse(v).outboxId).toBe("number"); expect(v).toMatch(/"outboxId":\d+,/); }
+  });
+
   it("a broker failure keeps rows unpublished (at-least-once, retry later)", async () => {
     const svc = new PaymentsService(pool, new FakePsp(), async () => true);
     await svc.pay(req("f1"));
