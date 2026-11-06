@@ -45,22 +45,22 @@
   <rect class="k" x="20" y="215" width="250" height="130" rx="8"/>
   <text class="s" x="145" y="237" text-anchor="middle">admission budget</text>
   <text class="big" x="145" y="270" text-anchor="middle">500 users/s</text>
-  <text class="s" x="145" y="293" text-anchor="middle">2 300 x 0.6 / 3 = 460, set to 500</text>
-  <text class="m" x="145" y="315" text-anchor="middle">measured: ~2 300 hold RPS</text>
+  <text class="s" x="145" y="293" text-anchor="middle">2 600 x 0.6 / 3 = 520, set to 500</text>
+  <text class="m" x="145" y="315" text-anchor="middle">measured: ~2 600 hold RPS</text>
   <text class="l" x="145" y="334" text-anchor="middle">0.6 headroom, 3 attempts per user</text>
 
   <rect class="k" x="325" y="215" width="250" height="130" rx="8"/>
   <text class="s" x="450" y="237" text-anchor="middle">worst wait for the last user</text>
   <text class="big" x="450" y="270" text-anchor="middle">100 s</text>
   <text class="s" x="450" y="293" text-anchor="middle">50 000 / 500 = 100 s</text>
-  <text class="m" x="450" y="315" text-anchor="middle">queue: ~7 600 RPS / instance</text>
-  <text class="l" x="450" y="334" text-anchor="middle">10 000 status polls/s -> 3 instances</text>
+  <text class="m" x="450" y="315" text-anchor="middle">queue: ~10 100 RPS / instance</text>
+  <text class="l" x="450" y="334" text-anchor="middle">10 000 status polls/s -> 2 instances</text>
 
   <rect class="g" x="630" y="215" width="250" height="130" rx="8"/>
   <text class="s" x="755" y="237" text-anchor="middle">payments</text>
   <text class="big" x="755" y="270" text-anchor="middle">333 / s</text>
   <text class="s" x="755" y="293" text-anchor="middle">20 000 seats / 60 s (plan 400/s)</text>
-  <text class="m" x="755" y="315" text-anchor="middle">measured: ~700/s, Postgres-bound</text>
+  <text class="m" x="755" y="315" text-anchor="middle">measured: 561/s at PSP 100 ms</text>
   <text class="l" x="755" y="334" text-anchor="middle">in flight: 400 x 0.1 s = ~40</text>
 
   <path class="e" d="M270 280 H325" marker-end="url(#a)"/>

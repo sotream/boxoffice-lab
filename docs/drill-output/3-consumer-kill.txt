@@ -1,0 +1,10 @@
+# drill 3: consumer SIGKILL (node drills/consumer-kill.mjs)
+# date: 2026-11-06T18:38Z
+# node: v26.13.0
+# git: a1e7f99 (working tree may include uncommitted doc edits)
+# machine: MacBook Air M1, all services, Postgres, Redis, Redpanda on the same laptop
+
+consumer SIGKILLed with 6229/12000 delivered; in SENDING at kill: 25
+restarted consumer finished 34.5s later: delivered 12000/12000
+duplicate (event,channel) rows: 0
+rows stuck in SENDING/FAILED: 0

@@ -12,8 +12,9 @@ Every figure in the playbook is labelled, so you can see what to trust:
 | `[derived]` | Computed on paper from stated assumptions with the formulas in `packages/capacity`. The arithmetic is shown. |
 | `[folk]` | A widely quoted ballpark from general engineering knowledge. Not measured here. |
 | `[paper design]` | A design with no code in this repo. Estimates are derived, nothing is measured. |
+| `[public price, 2026-11-06]` | An official public list price (AWS Price List files, on-demand, eu-central-1, no free tier, no Savings Plans) with its SKU, unit and source in the Price sources table in [from-100-to-1m-users.md](from-100-to-1m-users.md#price-sources). Any total built from it is [derived] from these prices. |
 
-A paper design is never presented as proven. If a number cannot be derived or measured, the document says what would have to be measured.
+A paper design is never presented as proven. If a number cannot be derived or measured, the document says what would have to be measured. List prices change; recompute with the date shown.
 
 ## Reading order
 
@@ -24,6 +25,5 @@ A paper design is never presented as proven. If a number cannot be derived or me
 5. [reliability-patterns.md](reliability-patterns.md): timeouts, retries, backpressure, fail-open/closed.
 6. [worked-scenarios/](worked-scenarios/): five paper designs with other load shapes (URL shortener, feed, ledger, event ingestion, file pipeline).
 7. [from-100-to-1m-users.md](from-100-to-1m-users.md): what to build first, what to postpone, build versus buy.
-8. [field-notes.md](field-notes.md): real production cases (numbers and decisions only), filled in by the owner.
 
 Related: [numbers-to-know](../numbers-to-know.md), [failure drills](../failure-drills.md), [capacity CLI](../../packages/capacity).

@@ -28,7 +28,7 @@ All commands are from [numbers-to-know.md](../../numbers-to-know.md) section (c)
 |---|---|---|
 | Redirect RPS | `traffic --dau 100M --actions 1 --peak 10`: 100 000 000 x 1 / 86 400 = 1 157 avg; x 10 | 1 157 avg, 11 574 peak [derived] |
 | Create RPS | `traffic --dau 1M --actions 1 --peak 10`: 1 000 000 / 86 400 = 11.6 avg; x 10 | 11.6 avg, 115.7 peak [derived] |
-| App instances | `instances --peak 11574 --per-instance 7656`: ceil(11 574 / (7 656 x 0.6)) = ceil(2.5) | 3 [derived], using the waiting-room per-instance figure of 7 656 RPS as a proxy for "one Redis call per request" ([measured] [waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md)); real handler must be re-measured |
+| App instances | `instances --peak 11574 --per-instance 10134`: ceil(11 574 / (10 134 x 0.6)) = ceil(1.9) | 2 [derived], using the waiting-room per-instance figure of 10 134 RPS as a proxy for "one Redis call per request" ([measured] [waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md)); real handler must be re-measured |
 | In flight at peak | `concurrency --rps 11574 --latency-ms 5`: 11 574 x 0.005 s | 57.9 requests [derived]; 5 ms is the assumed server-side time |
 | Response bandwidth | `bandwidth --rps 11574 --bytes 300`: 11 574 x 300 B | 3.5 MB/s = 27.8 Mbit/s [derived] (a 302 has no body, about 300 B with headers) |
 | Link storage, 1 replica | `storage --records-per-day 1M --bytes 300 --years 5 --replication 1` | 548 GB [derived] |
@@ -38,7 +38,7 @@ All commands are from [numbers-to-know.md](../../numbers-to-know.md) section (c)
 | DB reads after cache | peak 11 574 x (1 - hit rate 0.8) | 2 315 QPS [derived], hit rate 0.8 from the Pareto rule [folk] |
 | Required hit rate for a DB budget | DB budget 6 000 QPS (10 000 QPS [folk] x 0.6): miss <= 6 000 / 11 574 = 0.52, so hit >= 0.48 at x1 | the cache is optional at x1 and mandatory at x10 (see below) [derived] |
 
-Redis single node is about 100k ops/s [folk] ([numbers-to-know.md](../../numbers-to-know.md) section b). Postgres primary indexed reads 10k-50k+ QPS per node [folk]. Measured effect of a cache in this lab: a ranked query went from 684 to 15 236 RPS, p99 292.4 ms to 8.1 ms ([measured], [catalog RESULTS.md](../../../services/catalog/RESULTS.md)); a key lookup is cheaper than that query, so the ratio is not transferable, only the direction.
+Redis single node is about 100k ops/s [folk] ([numbers-to-know.md](../../numbers-to-know.md) section b). Postgres primary indexed reads 10k-50k+ QPS per node [folk]. Measured effect of a cache in this lab: a ranked query went from 536 to 10 275 RPS, p99 155.6 ms to 9.0 ms ([measured], [catalog RESULTS.md](../../../services/catalog/RESULTS.md)); a key lookup is cheaper than that query, so the ratio is not transferable, only the direction.
 
 ## Design
 
@@ -71,18 +71,18 @@ x10 means 1 billion redirects per day (peak 115 741 RPS) and 10M creates per day
 2. Second bottleneck: database reads on misses, then storage.
    - At 20% miss, DB load is 115 741 x 0.2 = 23 148 QPS [derived], above a conservative 6 000 QPS budget. The hit rate must reach 1 - 6 000 / 115 741 = 0.948 [derived]. Change: bigger cache plus the in-process layer to reach 95%, then a read replica; both are cheaper than sharding.
    - Storage `storage --records-per-day 10M --bytes 300 --years 5 --replication 1` = 5.5 TB [derived]. A single node holding 5.5 TB is past comfortable operation ([folk]); change: range- or hash-partition `links` by key, or move cold links (not read in 12 months) to cheaper storage.
-3. Not a bottleneck at x10: app instances (26, `instances --peak 115741 --per-instance 7656` = ceil(25.2) [derived]) and create writes (1 157 per second peak [derived], inside one primary).
+3. Not a bottleneck at x10: app instances (20, `instances --peak 115741 --per-instance 10134` = ceil(19.03) [derived]) and create writes (1 157 per second peak [derived], inside one primary).
 
 ## What would be measured first
 
 A k6 script `load/redirect.js` against a stub service, copied from two existing pieces: the Zipf key selection and cached vs uncached comparison of [services/catalog/load/search.js and run.sh](../../../services/catalog/load/search.js), and the direct vs through-a-hop comparison of [services/gateway/load/overhead.js](../../../services/gateway/load/overhead.js) (for the redirect handler vs proxy cost). Three runs, same data:
-1. 10M seeded links, Zipf over keys, cache off: the Postgres primary-key lookup ceiling at pool 20 (compare against the 2 359 RPS hold figure in [inventory RESULTS.md](../../../services/inventory/RESULTS.md) as the order of magnitude for one indexed statement).
+1. 10M seeded links, Zipf over keys, cache off: the Postgres primary-key lookup ceiling at pool 20 (compare against the 2 654 RPS hold figure in [inventory RESULTS.md](../../../services/inventory/RESULTS.md) as the order of magnitude for one indexed statement).
 2. Same, cache on: RPS, p99 and the real hit rate at the Zipf exponent chosen (decides whether 0.8 holds).
 3. Redis killed for 10 s under load (copy [drills/redis-down.mjs](../../../drills/redis-down.mjs)): does fail-open to Postgres hold.
 Pass criterion written before running: p99 under 20 ms at 11 574 RPS aggregate, hit rate at least 0.8.
 
 ## Where this is proven in the repo / what is still paper
 
-Proven (measured, different component): cache beats the better index for hot reads ([catalog RESULTS.md](../../../services/catalog/RESULTS.md)); Redis-backed handler at 7 656 RPS per instance ([waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md)); fail-open read path ([failure-drills.md](../../failure-drills.md)).
+Proven (measured, different component): cache beats the better index for hot reads ([catalog RESULTS.md](../../../services/catalog/RESULTS.md)); Redis-backed handler at 10 134 RPS per instance ([waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md)); fail-open read path ([failure-drills.md](../../failure-drills.md)).
 
 Still paper: the whole redirect service, ID scheme, 301/302 split, hit rate at 0.8, the 30% repeat-visit share, the sharded Redis, every x10 figure.

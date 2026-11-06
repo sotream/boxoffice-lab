@@ -1,0 +1,12 @@
+# drill 4: slow PSP 20 s (node drills/slow-psp.mjs 20000)
+# date: 2026-11-06T19:10Z
+# node: v26.13.0  nestjs: 12.4.0  fastify: 5.12.8
+# git: a1e7f99 (working tree)
+# machine: MacBook Air M1, all services, Postgres, Redis, Redpanda on the same laptop
+
+slow PSP 20000 ms, 300 payments, 100 clients, took 6.6s
+client latency p50=2105 p95=2112 max=2118 ms; responses {"202:PENDING(in-progress)":300}
+peak active DB connections of the lab database during the slow phase: 0
+PSP recovered; all payments final 3.1s later
+final states: CONFIRMED=300
+duplicate charges (idempotency keys with >1 row): 0

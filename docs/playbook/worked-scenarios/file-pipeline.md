@@ -23,7 +23,7 @@ Non-functional (assumptions)
 
 ## Estimates
 
-Unit prices in this file are placeholders. `U` is a unit of money chosen by the reader: 1 U per vCPU-hour of worker and 1 U per TB-month of object storage are stand-ins, not real prices; replace them before using any cost line.
+Prices in this file are [public price, 2026-11-06]: AWS on-demand list prices for eu-central-1, with SKUs and sources in the [Price sources](../from-100-to-1m-users.md#price-sources) table (P1, P2, P8). A worker slot is one Fargate task of 1 vCPU and 2 GB (the memory size is an assumption): (1 x 0.04656 + 2 x 0.00511) = 0.05678 USD per slot-hour. List prices change; recompute with the date shown. Request, retrieval, data transfer and queue costs are not priced.
 
 | Quantity | Formula and arithmetic | Result |
 |---|---|---|
@@ -32,12 +32,12 @@ Unit prices in this file are placeholders. `U` is a unit of money chosen by the 
 | Slots with headroom | 115.7 / 0.6 | 193 slots [derived]; at 4 slots per worker, ceil(193 / 4) = 49 workers |
 | Slots busy on average | 0.58 x 20 s | 11.6 slots [derived] |
 | Peak utilisation of a static fleet | work done per day = 50 000 x 20 s = 277.8 slot-hours; fleet sized for peak, 193 slots x 24 h = 4 632 slot-hours; 277.8 / 4 632 | 6% [derived]: a static fleet sized for peak is idle 94% of the day, so scale workers on queue depth |
-| Cost per file | 20 s / 3 600 x 1 U per vCPU-hour | 0.0056 U compute per file [derived, placeholder price] |
+| Cost per file | 20 s / 3 600 x 0.05678 USD per slot-hour | 0.000315 USD compute per file [derived from public prices] |
 | Upload bandwidth if the API proxies bytes | `bandwidth --rps 5.8 --bytes 5M` | 29 MB/s = 232 Mbit/s through the API at peak [derived]; zero if uploads go directly to object storage |
-| Original storage | `storage --records-per-day 50k --bytes 5M --years 1 --replication 1` | 91.3 TB per year [derived]; at 1 U per TB-month the standing cost after a year is 91.3 U per month, plus derived artefacts (preview, text) which are an extra to estimate |
-| Metadata writes | per file: 1 create + 4 steps x (start, finish) = 9 state changes; 9 x 5.8 | 52 writes/s at peak [derived], far under one Postgres (2 091 commits/s lower bound, [derived from payments RESULTS.md](../../../services/payments/RESULTS.md), 697 RPS x 3 commits) |
+| Original storage | `storage --records-per-day 50k --bytes 5M --years 1 --replication 1` | 91.3 TB per year [derived]; on S3 Standard (tiers 0.0245 USD per GB-month for the first 51 200 GB, then 0.0235) the standing cost after a year is 51 200 x 0.0245 + 40 050 x 0.0235 = 2 195.58 USD per month [derived from public prices; 1 TB counted as 1 000 GB, tier boundary as in the offer file], plus derived artefacts (preview, text) which are an extra to estimate |
+| Metadata writes | per file: 1 create + 4 steps x (start, finish) = 9 state changes; 9 x 5.8 | 52 writes/s at peak [derived], far under one Postgres (2 712 commits/s in one laptop run, [derived from payments RESULTS.md](../../../services/payments/RESULTS.md), 904 RPS x 3 commits; not a floor for other hardware) |
 | Status polling | clients poll every 2 s while their file is in flight: 115.7 in flight x 0.5 | 58 RPS [derived]; trivial, cache it |
-| Cost of poison files | max 3 attempts x 120 s timeout = 360 slot-s per poison file vs 20 s normal; at 1% poison = 500 files/day x 360 s / 3 600 | 50 slot-hours/day, 18% extra over the 277.8 slot-hours of normal work [derived] |
+| Cost of poison files | max 3 attempts x 120 s timeout = 360 slot-s per poison file vs 20 s normal; at 1% poison = 500 files/day x 360 s / 3 600 | 50 slot-hours/day, 18% extra over the 277.8 slot-hours of normal work [derived]; 50 x 0.05678 = 2.84 USD per day [derived from public prices] |
 
 ## Design
 
@@ -58,7 +58,7 @@ Key decisions
 
 1. Queue with per-message acknowledgement and visibility timeout, not a partitioned log.
    - Job durations vary by 100x (2 s to minutes). In a partitioned log one slow file blocks the partition behind it, and parallelism is capped by partitions: 193 slots would need 193 partitions ([numbers-to-know.md](../../numbers-to-know.md) section e: partitions bound consumer parallelism).
-   - The lab chose a log for notifications because of replay and later consumers ([notifications adr/001](../../../services/notifications/adr/001-kafka-for-notifications.md)), and noted that a managed queue is the better fit for a pure task queue because per-message ack, delay and dead-letter are built in. This scenario is that pure task queue. Rejected here: Kafka. Rejected: a Postgres `SKIP LOCKED` table at larger scale; acceptable below roughly 50 files/s since the state table already exists (see x10).
+   - The lab chose a log for notifications because of replay and later consumers ([notifications adr/001](../../../services/notifications/adr/001-kafka-for-notifications.md)), and noted that a managed queue is the better fit for a pure task queue because per-message ack, delay and dead-letter are built in. This scenario is that pure task queue. Rejected here: Kafka. Rejected: a Postgres `SKIP LOCKED` table at larger scale; acceptable while the state writes stay inside the commit budget, since the state table already exists (see x10: the budget is reached near x24).
 2. Idempotent steps, state per step. A retry or a duplicate delivery must produce the same visible result: deterministic output keys (overwriting the same object is harmless), the index step is an upsert on `file_id`, and the step row is the arbiter, as the unique `(outbox_id, channel)` key is in notifications ([notifications adr/002](../../../services/notifications/adr/001-kafka-for-notifications.md): at-least-once, dedup key, lease so two workers cannot do the same item at once; measured 0 duplicate rows, [notifications RESULTS.md](../../../services/notifications/RESULTS.md)). Rejected: one big "process file" function that is re-run from step 1 on any failure, which pays the 12 s OCR again after an index failure.
 3. Per-step retry policy, not per-file.
    - Transient errors (timeouts, 5xx from a scan service): exponential backoff with jitter, up to 3 attempts per step.
@@ -76,9 +76,9 @@ x10 means 500 000 files per day, 57.9 files/s at peak, 1 157 busy slots (`concur
 1. First bottleneck: worker fleet size and scale-up speed, which is a cost and latency problem, not a throughput one.
    - Slots with headroom: 1 157 / 0.6 = 1 929; at 4 slots per worker, 483 workers [derived]. If scaling out takes 3 minutes, a 10x burst already uses the 5-minute objective before the fleet exists.
    - Changes: scale on queue age with a minimum warm pool; reduce per-file work (skip OCR for files that already contain text, which is the largest step at 12 of 20 s, 60% of the cost [derived]); a priority lane so small files are not stuck behind 100 MB ones.
-   - Cost at x10: 500 000 x 0.0056 U = 2 778 U per day of compute at the placeholder price, linear in files [derived]; the saving lever is seconds per file, not instance type.
+   - Cost at x10: 500 000 x 0.000315 USD = 157.72 USD per day of compute, linear in files [derived from public prices]; originals at 912 500 GB cost 51 200 x 0.0245 + 460 800 x 0.0235 + 400 500 x 0.0225 = 21 094.45 USD per month after a year [derived from public prices]. The saving lever is seconds per file and storage tiering, not instance type.
 2. Second bottleneck: state writes and queue as a database table.
-   - State changes: 9 x 57.9 = 521 writes/s at x10 [derived], inside the 1 255 per second budget (2 091 x 0.6). The budget is exhausted at 1 255 / 52 = x24 [derived], so the `file_steps` table with a `SKIP LOCKED` queue on the same primary stops being enough near x24; move the queue to a managed queue and keep only state in Postgres. Also partition `file_steps` by month and prune finished rows.
+   - State changes: 9 x 57.9 = 521 writes/s at x10 [derived], inside the 1 627 per second budget (2 712 x 0.6). The budget is exhausted at 1 627 / 52 = x31 [derived], so the `file_steps` table with a `SKIP LOCKED` queue on the same primary stops being enough near x24; move the queue to a managed queue and keep only state in Postgres. Also partition `file_steps` by month and prune finished rows.
 3. Not yet a bottleneck at x10: status polling (580 RPS, [derived]) and original storage growth (913 TB per year at x10 [derived: 10 x 91.3], which is a cost line, so add lifecycle rules: move originals to a cheaper tier after 30 days).
 
 ## What would be measured first
@@ -90,6 +90,6 @@ x10 means 500 000 files per day, 57.9 files/s at peak, 1 157 busy slots (`concur
 
 ## Where this is proven in the repo / what is still paper
 
-Proven (other components): at-least-once with a dedup key and a lease, dead-letter for poison messages, exact counts after 1 000 duplicates and 10 poison messages, and recovery after a killed consumer ([notifications RESULTS.md](../../../services/notifications/RESULTS.md), [failure-drills.md](../../failure-drills.md) drill 3); idempotency keys as a unique column ([payments adr/003](../../../services/payments/adr/001-saga-over-2pc.md)); the commit-rate floor of one Postgres ([payments RESULTS.md](../../../services/payments/RESULTS.md)).
+Proven (other components): at-least-once with a dedup key and a lease, dead-letter for poison messages, exact counts after 1 000 duplicates and 10 poison messages, and recovery after a killed consumer ([notifications RESULTS.md](../../../services/notifications/RESULTS.md), [failure-drills.md](../../failure-drills.md) drill 3); idempotency keys as a unique column ([payments adr/003](../../../services/payments/adr/001-saga-over-2pc.md)); the commit rate of one Postgres in one laptop run ([payments RESULTS.md](../../../services/payments/RESULTS.md)).
 
-Still paper: the upload flow, presigned URLs, step runner, autoscaling, the step durations, the cost per file (placeholder price), all x10 figures. The notifications consumer handles 20 ms sends, not 12 s CPU steps, so its per-second figures do not transfer.
+Still paper: the upload flow, presigned URLs, step runner, autoscaling, the step durations behind the cost per file, all x10 figures. The notifications consumer handles 20 ms sends, not 12 s CPU steps, so its per-second figures do not transfer.

@@ -28,47 +28,47 @@
   <text class="s" x="270" y="176" text-anchor="middle">Redis + Lua, shared clock</text>
   <text class="s" x="270" y="198" text-anchor="middle">admission token: HMAC,</text>
   <text class="s" x="270" y="214" text-anchor="middle">checked without Redis</text>
-  <text class="n" x="270" y="246" text-anchor="middle">1 742 RPS via gateway</text>
-  <text class="n" x="270" y="264" text-anchor="middle">2 244 RPS direct</text>
-  <text class="s" x="270" y="288" text-anchor="middle">hop costs ~22% throughput</text>
+  <text class="n" x="270" y="246" text-anchor="middle">2 001 RPS via gateway</text>
+  <text class="n" x="270" y="264" text-anchor="middle">2 485 RPS direct</text>
+  <text class="s" x="270" y="288" text-anchor="middle">hop costs ~19% throughput</text>
 
   <rect class="svc" x="430" y="20" width="210" height="100" rx="8"/>
   <text class="h" x="535" y="46" text-anchor="middle">waiting-room</text>
   <text class="s" x="535" y="66" text-anchor="middle">virtual queue, admits 500/s</text>
-  <text class="n" x="535" y="92" text-anchor="middle">~7 600 RPS / instance</text>
-  <text class="s" x="535" y="110" text-anchor="middle">p99 27.8 ms</text>
+  <text class="n" x="535" y="92" text-anchor="middle">~10 100 RPS / instance</text>
+  <text class="s" x="535" y="110" text-anchor="middle">p99 22.3 ms</text>
   <rect class="db" x="700" y="30" width="180" height="80" rx="8"/>
   <text class="h" x="790" y="56" text-anchor="middle">Redis</text>
   <text class="s" x="790" y="75" text-anchor="middle">sorted set, ZPOPMIN</text>
-  <text class="n" x="790" y="96" text-anchor="middle">~100 B per queued user</text>
+  <text class="n" x="790" y="96" text-anchor="middle">100-150 B per user</text>
 
   <rect class="svc" x="430" y="150" width="210" height="100" rx="8"/>
   <text class="h" x="535" y="176" text-anchor="middle">catalog</text>
   <text class="s" x="535" y="196" text-anchor="middle">search, cache-aside</text>
-  <text class="n" x="535" y="222" text-anchor="middle">15 236 RPS cached</text>
-  <text class="s" x="535" y="240" text-anchor="middle">684 RPS ranked, no cache</text>
+  <text class="n" x="535" y="222" text-anchor="middle">10 275 RPS cached</text>
+  <text class="s" x="535" y="240" text-anchor="middle">536 RPS ranked, no cache</text>
   <rect class="db" x="700" y="150" width="180" height="100" rx="8"/>
   <text class="h" x="790" y="176" text-anchor="middle">Postgres + Redis</text>
   <text class="s" x="790" y="196" text-anchor="middle">tsvector + GIN index,</text>
   <text class="s" x="790" y="212" text-anchor="middle">cache TTL 30 s</text>
-  <text class="n" x="790" y="236" text-anchor="middle">GIN 87x ILIKE (rare term)</text>
+  <text class="n" x="790" y="236" text-anchor="middle">GIN ~390x ILIKE (rare)</text>
 
   <rect class="svc" x="430" y="280" width="210" height="100" rx="8"/>
   <text class="h" x="535" y="306" text-anchor="middle">inventory</text>
   <text class="s" x="535" y="326" text-anchor="middle">conditional UPDATE hold</text>
-  <text class="n" x="535" y="352" text-anchor="middle">~2 300 hold RPS / instance</text>
-  <text class="s" x="535" y="370" text-anchor="middle">p99 37.7 ms, 0 oversell</text>
+  <text class="n" x="535" y="352" text-anchor="middle">~2 600 hold RPS / instance</text>
+  <text class="s" x="535" y="370" text-anchor="middle">p99 31.7 ms, 0 oversell</text>
   <rect class="db" x="700" y="280" width="180" height="100" rx="8"/>
   <text class="h" x="790" y="306" text-anchor="middle">Postgres</text>
   <text class="s" x="790" y="326" text-anchor="middle">one row per seat</text>
   <text class="s" x="790" y="342" text-anchor="middle">lazy hold expiry</text>
-  <text class="n" x="790" y="366" text-anchor="middle">~50 connections at peak</text>
+  <text class="n" x="790" y="366" text-anchor="middle">~45 connections at peak</text>
 
   <rect class="svc" x="170" y="430" width="200" height="110" rx="8"/>
   <text class="h" x="270" y="456" text-anchor="middle">payments</text>
   <text class="s" x="270" y="476" text-anchor="middle">saga, idempotency key,</text>
   <text class="s" x="270" y="492" text-anchor="middle">Postgres outbox + relay</text>
-  <text class="n" x="270" y="518" text-anchor="middle">~700 payments/s / instance</text>
+  <text class="n" x="270" y="518" text-anchor="middle">561 payments/s / instance</text>
 
   <rect class="mq" x="440" y="440" width="170" height="90" rx="8"/>
   <text class="h" x="525" y="466" text-anchor="middle">Kafka (Redpanda)</text>

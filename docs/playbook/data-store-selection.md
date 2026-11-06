@@ -27,9 +27,9 @@ Labels: **[measured]** from a RESULTS.md or drill in this repo; **[derived]** co
 **When no.** A queue with random access to a user's position under a spike you are trying to protect the database from (the waiting room rejected a Postgres `ORDER BY joined_at` table because "queue writes would hit the same database we are protecting"). Typo-tolerant, faceted search at corpus sizes beyond one node. Sustained write rates above what one primary commits (see the commit-bound payments measurement).
 
 **What this repo chose it for.**
-- Inventory seats with a conditional UPDATE: 2 359 RPS, p99 37.7 ms with 100k seats; 2 780 RPS with 20 hot seats [measured, [inventory RESULTS](../../services/inventory/RESULTS.md)]. [ADR 001](../../services/inventory/adr/001-hold-strategy.md).
-- Payments state machine, idempotency key and outbox: about 700 payments/s per instance with pool 20, Postgres-bound, 3 commits per payment [measured, [payments RESULTS](../../services/payments/RESULTS.md)]. [ADR 001 to 003](../../services/payments/adr/001-saga-over-2pc.md).
-- Catalog search with tsvector + GIN: 4 387 RPS date-ordered, 684 RPS ranked; 87x ILIKE on a rare term [measured, [catalog RESULTS](../../services/catalog/RESULTS.md)]. [ADR 001](../../services/catalog/adr/001-postgres-fts-before-elasticsearch.md).
+- Inventory seats with a conditional UPDATE: 2 654 RPS, p99 31.7 ms with 100k seats; 3 222 RPS with 20 hot seats [measured, [inventory RESULTS](../../services/inventory/RESULTS.md)]. [ADR 001](../../services/inventory/adr/001-hold-strategy.md).
+- Payments state machine, idempotency key and outbox: 904 payments/s per instance at PSP 0 ms (561 at PSP 100 ms) with pool 20, Postgres-bound (profiled before the NestJS 12 / Fastify 5 upgrade, not repeated), 3 commits per payment [measured, [payments RESULTS](../../services/payments/RESULTS.md)]. [ADR 001 to 003](../../services/payments/adr/001-saga-over-2pc.md).
+- Catalog search with tsvector + GIN: 3 199 RPS date-ordered, 536 RPS ranked; about 390x ILIKE on a rare term [measured, [catalog RESULTS](../../services/catalog/RESULTS.md)]. [ADR 001](../../services/catalog/adr/001-postgres-fts-before-elasticsearch.md).
 - Notification dedup and delivery state `(outbox_id, channel)` with a lease [[notifications ADR 002](../../services/notifications/adr/001-kafka-for-notifications.md)].
 
 **Rejected here and why (from the ADRs).**
@@ -49,13 +49,13 @@ Labels: **[measured]** from a RESULTS.md or drill in this repo; **[derived]** co
 **When no.** As the only copy of anything that must not be lost, or as a second source of truth for an invariant owned by a database (the seat hold and the idempotency lock were rejected for this reason).
 
 **What this repo chose it for.**
-- Cache-aside for catalog search with single-flight and TTL jitter: 15 236 RPS, p99 8.1 ms vs 684 RPS uncached [measured]. Sizing: about 300 MB for 100k keys of 3 KB, 60 MB hot [derived, catalog CAPACITY.md]. [Catalog ADR 002](../../services/catalog/adr/001-postgres-fts-before-elasticsearch.md).
-- Waiting-room queue: sorted set with `INCR` sequence as score; 7 656 RPS, p99 27.8 ms, 6 MB for 41 145 queued users, about 100 B each [measured, [waiting-room RESULTS](../../services/waiting-room/RESULTS.md)]. [ADR](../../services/waiting-room/adr/001-redis-sorted-set-queue.md).
+- Cache-aside for catalog search with single-flight and TTL jitter: 10 275 RPS, p99 9.0 ms vs 536 RPS uncached [measured]. Sizing: about 300 MB for 100k keys of 3 KB, 60 MB hot [derived, catalog CAPACITY.md]. [Catalog ADR 002](../../services/catalog/adr/001-postgres-fts-before-elasticsearch.md).
+- Waiting-room queue: sorted set with `INCR` sequence as score; 10 134 RPS, p99 22.3 ms, 7.68 MB for 57 497 queued users, up to 140 B each (100 B planning figure) [measured, [waiting-room RESULTS](../../services/waiting-room/RESULTS.md)]. [ADR](../../services/waiting-room/adr/001-redis-sorted-set-queue.md).
 - Gateway token bucket: one Lua call per request; 12 500 ops/s is about 12 % of a node [derived, gateway CAPACITY.md]. [ADR 001](../../services/gateway/adr/001-token-bucket-redis.md).
 
 **Rejected here and why.** In-process counters (wrong with N instances); `GET` then `SET` from the app (races; tested 300 concurrent takes on a bucket of 100 allow about 100); sticky routing with local buckets (uneven, breaks on rebalancing); a Redis lookup per hold for admission (replaced by an HMAC token, trade-off: no revocation for 5 minutes) [gateway ADRs 001 and 002].
 
-**Operational cost.** Low to run, but it becomes a dependency of the hot path, so its failure mode needs a decision. Memory is the cost driver (about 100 MB per million queued users [derived]).
+**Operational cost.** Low to run, but it becomes a dependency of the hot path, so its failure mode needs a decision. Memory is the cost driver (100 to 150 MB per million queued users [derived]).
 
 **Failure behaviour.** Drilled: Redis stopped for 10 s under gateway traffic. v1 returned 100 % errors for the whole outage because the client queued commands and every request hung until the 2 s timeout; v2 (fail-fast client, 200 ms command timeout, no offline queue) had 0 errors on availability and a fast 503 on holds and queue calls [measured, drill 1, [failure-drills](../failure-drills.md)]. Policy: fail open for reads, fail closed for anything that spends scarce state. The waiting room is a single point of failure for the sale; worst case users re-join (idempotent), and order is lost, not money [waiting-room ADR].
 
@@ -73,7 +73,7 @@ Labels: **[measured]** from a RESULTS.md or drill in this repo; **[derived]** co
 
 **Operational cost.** Highest of the stores run here. What the log does not provide must be written in the application: retry, backoff, DLQ, dedup (that code is the point of the notifications lab; with SQS it would be configuration). Partition count is hard to change later because it reorders keys. Storage is trivial at this scale: 300 B x 21k events = 6 MB per sale [derived].
 
-**Failure behaviour.** Drilled: Redpanda stopped while 300 payments were made: 300 of 300 OK in 0.7 s, events buffered in the outbox, caught up 1.2 s after the broker returned, topic grew by exactly 300 (drill 2). Consumer SIGKILL at 6 492 of 12 000: 12 000 of 12 000 delivered, 0 duplicate rows, 33.6 s because of the 30 s lease (drill 3) [measured, [failure-drills](../failure-drills.md)]. Delivery is at-least-once; consumers deduplicate.
+**Failure behaviour.** Drilled: Redpanda stopped while 300 payments were made: 300 of 300 OK in 0.7 s, events buffered in the outbox, caught up 0.7 s after the broker returned, topic grew by exactly 300 (drill 2). Consumer SIGKILL at 6 229 of 12 000: 12 000 of 12 000 delivered, 0 duplicate rows, 34.5 s because of the 30 s lease (drill 3) [measured, [failure-drills](../failure-drills.md)]. Delivery is at-least-once; consumers deduplicate.
 
 ## Elasticsearch / OpenSearch [paper design]
 
@@ -85,7 +85,7 @@ Labels: **[measured]** from a RESULTS.md or drill in this repo; **[derived]** co
 
 **What was rejected and why (copied reasoning).** "A second system, an indexing pipeline (CDC or dual write), eventual consistency, an operations burden." Postgres FTS is "transactional with the data (no sync pipeline, no stale index)".
 
-**Operational cost.** [folk] A cluster to size and upgrade, a sync pipeline to monitor for lag and drift, reindexing when mappings change. A node serves "hundreds to low thousands of queries/s; query complexity dominates" [folk, numbers-to-know]; compare with the measured 684 to 4 387 RPS per Postgres instance on this laptop for the catalog queries, which says nothing about a tuned cluster.
+**Operational cost.** [folk] A cluster to size and upgrade, a sync pipeline to monitor for lag and drift, reindexing when mappings change. A node serves "hundreds to low thousands of queries/s; query complexity dominates" [folk, numbers-to-know]; compare with the measured 536 to 3 199 RPS per Postgres instance on this laptop for the catalog queries, which says nothing about a tuned cluster.
 
 **Failure behaviour.** Not drilled. The failure to design for is index lag or divergence from the source of truth; the repo's pattern for such a feed is the transactional outbox (drill 2), not run against a search index.
 

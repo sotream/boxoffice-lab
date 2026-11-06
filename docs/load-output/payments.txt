@@ -1,0 +1,18 @@
+# payments: services/payments/load/pay.js (100 VUs, 20 s, compensation path: seats not held)
+# date: 2026-11-06T19:07Z
+# node: v26.13.0  nestjs: 12.4.0  fastify: 5.12.8
+# git: a1e7f99 (working tree)
+# machine: MacBook Air M1, k6 and services on the same machine
+
+PSP 100 ms: {"rps":561,"p50":208,"p95":219,"p99":325,"reqs":11307}
+ERROR:  syntax error at or near "\"
+LINE 1: select count(*)||\"/\"||count(published_at) from payments.ou...
+                         ^
+  payments=9407 statuses=REFUNDED=9407 outbox= dup_keys=0
+PSP 0 ms: {"rps":904,"p50":118,"p95":144,"p99":179,"reqs":18174}
+ERROR:  syntax error at or near "\"
+LINE 1: select count(*)||\"/\"||count(published_at) from payments.ou...
+                         ^
+  payments=15097 statuses=REFUNDED=15097 outbox= dup_keys=0
+# integrity check for the PSP 0 ms run, run separately after the script's own outbox query failed on shell quoting
+outbox rows=15097 published=15097

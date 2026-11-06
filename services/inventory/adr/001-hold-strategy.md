@@ -7,7 +7,7 @@
 |---|---|
 | Check then write in the app | Rejected: race between SELECT and UPDATE, the classic double booking bug. |
 | `SELECT ... FOR UPDATE` then UPDATE | Correct. Two round trips and locks held across them. Measured ~18% lower throughput at low contention. |
-| **Single conditional UPDATE** | Correct. One round trip, lock only for the statement. Chosen. |
+| **Single conditional UPDATE** | Correct. One round trip, row locks held only for the short transaction around it. Chosen. |
 | Redis `SET NX EX` as the hold | Fast, built-in TTL, but a second source of truth to reconcile with the sale in Postgres. Rejected for now; revisit if the DB becomes the bottleneck. |
 | Serializable isolation | Correct but needs retry loops on serialization failures; heavier than needed for single-row predicates. |
 

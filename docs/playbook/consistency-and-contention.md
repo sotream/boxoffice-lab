@@ -23,7 +23,7 @@ What is contended?
 
 2. Many rows touched together, all-or-nothing?
      -> can you always touch them in the same order (sort ids)?
-          yes -> conditional UPDATE ... WHERE id = ANY(sorted ids), compare rowCount   (inventory does this)
+          yes -> conditional UPDATE ... WHERE id = ANY(sorted ids), compare rowCount   (inventory does this; lock order caveat in section 1)
                  or SELECT ... ORDER BY id FOR UPDATE then UPDATE                      section 3
           no  -> pessimistic lock with a global ordering rule, or one advisory lock
                  per aggregate .......................................... section 4 [paper design]
@@ -58,11 +58,11 @@ What is contended?
 | Double spend / double booking | Two buyers hold seat 1 | Conditional UPDATE or FOR UPDATE, DB as arbiter | 100 concurrent holders on one seat, exactly 1 wins, both strategies (`services/inventory/src/inventory.test.ts`) |
 | Double charge | Client retries a timed-out payment | Idempotency key as a unique column, plus the same key to the provider | 50 concurrent same-key requests, `psp.chargeCalls == 1`, one payments row (`services/payments/src/payments.test.ts`) |
 | Phantom / oversell on a predicate | "at most N holds per event" enforced by `SELECT count(*)` then insert: two transactions both count N-1 and both insert | Lock a parent row or an advisory lock per event, or a counter row updated with a conditional UPDATE; SERIALIZABLE with retries as the heavy option | [paper design]. Inventory avoids the phantom class because each seat is its own row and the rule is a per-row predicate. |
-| Deadlock | Request A locks seats 4,5; request B locks 5,4 | Global lock order (sort ids) | 40 concurrent holds in opposite order, one wins, no deadlock error (`inventory.test.ts`) |
+| Deadlock | Request A locks seats 4,5; request B locks 5,4 | Global lock order (sort ids; explicit `ORDER BY ... FOR UPDATE` for a guarantee) | 40 concurrent holds in opposite order, one wins, no deadlock error (`inventory.test.ts`) |
 | Duplicate event | Relay crashes after publish, before marking published; Kafka redelivers | Dedup key on the consumer side, at-least-once producer | `deliveries` PK `(outbox_id, channel)`; 20 concurrent deliveries of one event send once per channel (`services/notifications/src/handler.test.ts`) |
 | Lost event | State committed, process dies before `producer.send` | Transactional outbox | Crash-after-confirm and broker-down tests; drill 2 (300/300 events arrive) |
 | Duplicate concurrent processing | Two workers pick the same notification | Lease with takeover, `SKIP LOCKED` for table queues | Lease takeover test; two relays at once never publish the same row |
-| Stuck claim after a crash | Worker dies holding a claim | Lease expiry | Drill 3: SIGKILL at 6 492 / 12 000, finished 12 000 / 12 000 in 33.6 s [measured] `docs/failure-drills.md` |
+| Stuck claim after a crash | Worker dies holding a claim | Lease expiry | Drill 3: SIGKILL at 6 229 / 12 000, finished 12 000 / 12 000 in 34.5 s [measured] `docs/failure-drills.md` |
 
 ## 1. Conditional single-statement UPDATE
 
@@ -70,7 +70,7 @@ What is contended?
 
 **When to pick it.** The rule is expressible as a predicate on the row being changed, and the work is one round trip. It is the default choice for "claim a scarce thing" and for state-machine transitions (`... WHERE status = $from`).
 
-**Cost.** One round trip, row lock held only for the statement. Cannot do logic that needs values from other tables or an external call between check and write.
+**Cost.** One round trip; the row lock is held until the short transaction (or the single statement) ends. Cannot do logic that needs values from other tables or an external call between check and write.
 
 **Failure mode.** Forgetting to check the affected row count (a silent no-op). Multi-row versions need `rowCount == requested` and a rollback, otherwise you get a partial success.
 
@@ -82,12 +82,12 @@ What is contended?
 
 | Strategy | Contention | RPS | p50 ms | p95 ms | p99 ms |
 |---|---|---|---|---|---|
-| atomic-update | low (100k seats) | 2359 | 20.3 | 28.8 | 37.7 |
-| atomic-update | hot (20 seats) | 2780 | 17.1 | 24.8 | 30.7 |
-| for-update | low (100k seats) | 1924 | 25.0 | 35.7 | 46.3 |
-| for-update | hot (20 seats) | 2834 | 16.8 | 23.7 | 30.7 |
+| atomic-update | low (100k seats) | 2654 | 18.0 | 26.1 | 31.7 |
+| atomic-update | hot (20 seats) | 3222 | 14.7 | 21.3 | 27.9 |
+| for-update | low (100k seats) | 2182 | 22.3 | 30.9 | 38.4 |
+| for-update | hot (20 seats) | 3218 | 14.8 | 20.7 | 25.7 |
 
-  Reading from the same file: hot seats are faster per request because losers get an immediate 409 and no write happens, so measure the rate of successful holds too (this run does not report it). At low contention atomic-update is 2359 vs 1924 RPS: 1 - 1924/2359 = 18.4% [derived], which matches the "~18%" in the ADR. At hot contention the two strategies are within 2% (2780 vs 2834) and for-update is nominally higher; with a single run per cell that difference is noise, not a result.
+  Reading from the same file: hot seats are faster per request because losers get an immediate 409 and no write happens, so measure the rate of successful holds too (the file now lists them: low contention atomic-update 41 144 ok / 11 972 conflicts, hot 20 ok / 64 456 conflicts). At low contention atomic-update is 2654 vs 2182 RPS: 1 - 2182/2654 = 17.8% [derived], which still matches the "~18%" in the ADR. At hot contention the two strategies are within 0.2% (3222 vs 3218) and atomic-update is nominally higher; with a single run per cell that difference is noise, not a result.
 - Caveat on lock order: `holdAtomic` sorts the ids in JavaScript before the statement, but an `UPDATE ... WHERE seat_id = ANY(...)` has no `ORDER BY`, so the order in which Postgres locks the rows is up to the plan. The opposite-order test passes (40 concurrent holds, one winner), but that is evidence for the tested plan, not a guarantee. `holdForUpdate` uses an explicit `ORDER BY seat_id FOR UPDATE`.
 
 ## 2. Optimistic locking (version column) [paper design]
@@ -119,13 +119,13 @@ Why inventory does not use it: a seat is contended by thousands of buyers within
 
 **When to pick it.** The decision needs data you cannot put in a WHERE clause (values from several rows, a computation), and the critical section is short and stays inside the database. Over the conditional UPDATE only when the single-statement form cannot express the rule.
 
-**Cost.** Two round trips and locks held across them. Measured here: 1924 vs 2359 RPS at low contention, 18.4% less (table above).
+**Cost.** Two round trips and locks held across them. Measured here: 2182 vs 2654 RPS at low contention, 17.8% less (table above).
 
 **Failure mode.** Deadlock when two transactions lock the same rows in different orders; lock pile-ups if anything slow (an HTTP call) runs while locks are held; idle-in-transaction connections exhausting the pool.
 
 **Where this repo proves it.**
 - Code: `holdForUpdate` in `services/inventory/src/inventory.service.ts`: `SELECT seat_id FROM seats WHERE ... ORDER BY seat_id FOR UPDATE`, check the count, then `UPDATE`. Ids are de-duplicated and sorted before either strategy runs (`[...new Set(seatIds)].sort((a, b) => a - b)`).
-- Test: "does not deadlock on overlapping seat sets in opposite order": 40 concurrent holds, half `[4,5]`, half `[5,4]`; exactly 1 succeeds and none throws (`inventory.test.ts`, both strategies). ADR: "Seat ids are sorted before locking so two requests for `[4,5]` and `[5,4]` cannot deadlock (tested)".
+- Test: "does not deadlock on overlapping seat sets in opposite order": 40 concurrent holds, half `[4,5]`, half `[5,4]`; exactly 1 succeeds and none throws (`inventory.test.ts`, both strategies). ADR: `for-update` locks in an explicit `ORDER BY seat_id`; the ADR states that the single-UPDATE path is evidence, not a guarantee.
 - Design rule: never call out of the database while holding the lock. Payments follows it from the other side: it opens a transaction only for the state change, so a pool of 20 serves 40+ in-flight payments (`services/payments/CAPACITY.md`).
 - Not tested: a test that proves the deadlock exists without the sort. The test shows absence of the failure with the sort, not that it would fail without it.
 
@@ -135,7 +135,7 @@ Why inventory does not use it: a seat is contended by thousands of buyers within
 
 **When to pick it.** Coordination inside one Postgres instance, short critical sections, no lock table wanted. Transaction-scoped (`pg_advisory_xact_lock`) releases automatically at commit or rollback; prefer it over session-scoped locks, which leak when a pooler reuses the connection.
 
-**Cost.** Lock keys are 64-bit integers you must map from names (hash collisions are possible and harmless but cause needless waiting). Locks are per database instance, so they do not survive failover to a different design (they do move with a replica promotion, but held locks are lost).
+**Cost.** Lock keys are 64-bit integers you must map from names (hash collisions are possible and harmless but cause needless waiting). Locks live in the memory of one server: they are not replicated and are gone after a restart or a failover.
 
 **Failure mode.** Session-level locks with transaction-mode connection poolers (the lock stays on a connection another client then uses). Waiting forever with no `lock_timeout`.
 
@@ -165,7 +165,7 @@ For "only one worker per job" with crash recovery this repo uses a lease (sectio
 **Where this repo proves it.**
 - Code: `PaymentsService.pay` in `services/payments/src/payments.service.ts`: `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING id, status`; zero rows inserted means "seen before", so it reads the stored row and returns `done` (final status) or `in-progress`. The same key is passed to `psp.charge`. Schema: `idempotency_key text NOT NULL UNIQUE` in `services/payments/migrations/001_init.sql`. ADR 003 (in `services/payments/adr/001-saga-over-2pc.md`, which holds ADRs 001 to 003) rejects Redis `SETNX` as a lock because it adds a second system whose failure semantics must match the database's.
 - Tests (`services/payments/src/payments.test.ts`): "idempotency: 50 concurrent requests with one key charge exactly once" (`chargeCalls == 1`, one payments row, a later retry returns CONFIRMED without charging); "crash after charge: resume finishes the saga and does not double charge" (status stays CHARGED after the crash, `resume` ends CONFIRMED, `psp.charges.size == 1`).
-- Measured [measured] `services/payments/RESULTS.md`: every 5th payment is retried with the same key; after the run payments rows 8 874, outbox rows 8 874, published 8 874, Kafka high watermark 8 874, duplicate idempotency keys 0.
+- Measured [measured] `services/payments/RESULTS.md`: every 5th payment is retried with the same key; after the PSP 0 ms run payments rows 15 097 (all REFUNDED, the compensation path), outbox rows 15 097, published 15 097, duplicate idempotency keys 0 (the same file also records 9 407 payments and 0 duplicate keys for the PSP 100 ms run; its outbox count was lost to a shell-quoting error in the script and is not claimed).
 - Not tested: a crash between `psp.charge` returning and the `PENDING -> CHARGED` commit. The state would still be PENDING, and `resume` would call `psp.charge` again with the same key; correctness then depends on the PSP honouring the key (the `FakePsp` does, `psp.ts`). Concurrent losers get `in-progress` immediately and do not wait for the winner.
 - Sibling repo (verified by reading it): kafka-pay-lab `docs/adr/0015-client-idempotency-keys.md` stores the key plus a SHA-256 fingerprint of the body on the payments row with a partial unique index, returns 422 for the same key with a different body, and lets the unique index serialise concurrent requests instead of returning 409.
 
@@ -177,7 +177,7 @@ For "only one worker per job" with crash recovery this repo uses a lease (sectio
 
 **Cost.** Saga: you design compensations, tolerate intermediate states (CHARGED but not yet CONFIRMED), and make every step idempotent. 2PC: locks held across network calls, and everything blocks if the coordinator dies.
 
-**Failure mode.** Saga: a missing compensation leaves money or inventory stranded; ordering that sells goods before the money is safe. 2PC: coordinator failure blocks participants.
+**Failure mode.** Saga: a missing compensation leaves money or inventory stranded; selling goods before the money is secured is the unsafe order. 2PC: coordinator failure blocks participants.
 
 **Where this repo proves it.**
 - Decision: `services/payments/adr/001-saga-over-2pc.md`: charge first, then confirm seats, refund if confirm fails. The reverse order "would sell seats for money we may never collect". The cost of this order is a refund when the 10-minute hold expired mid-payment. Orchestration over choreography because the service owns the state machine and each step can be crash-tested.
@@ -198,8 +198,8 @@ For "only one worker per job" with crash recovery this repo uses a lease (sectio
 **Where this repo proves it.**
 - Code: `transition()` inserts the outbox row in the same transaction as the status change. `OutboxRelay.drainOnce` in `services/payments/src/outbox-relay.ts` selects `WHERE published_at IS NULL ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`, publishes, then sets `published_at`, all inside one transaction. Partial index `outbox_unpublished ... WHERE published_at IS NULL`.
 - Tests: "publishes each row once per successful drain and marks it" (5 rows, drain returns 5 then 0); "a broker failure keeps rows unpublished (at-least-once, retry later)"; "two relays at once never publish the same row (SKIP LOCKED)": 40 payments, two relays with batch 10 and a 30 ms publish delay, `a + b == 20` and all published ids unique.
-- Drill 2 [measured] `docs/failure-drills.md`: broker stopped while 300 payments are made: 300/300 payments OK in 0.7 s, 300 events buffered in the outbox, caught up 1.2 s after the broker returned, topic grew by exactly 300.
-- Bottleneck [measured] `services/payments/RESULTS.md`: at PSP 0 ms, 697 RPS; Postgres container about 243% CPU with LWLock waits, payments Node about 84% CPU. The limit is the database: 3 commits per payment (insert, `PENDING -> CHARGED`, final state with the outbox row) plus inventory's confirm. The file's suggested next step is to collapse transitions that need no durability between them, or use `synchronous_commit=off` for the intermediate step. Commit count per business operation is the number to watch: [derived] at the planned 400 payments/s, 400 x 3 = 1 200 commits/s (`services/payments/CAPACITY.md`).
+- Drill 2 [measured] `docs/failure-drills.md`: broker stopped while 300 payments are made: 300/300 payments OK in 0.7 s, 300 events buffered in the outbox, caught up 0.7 s after the broker returned, topic grew by exactly 300.
+- Bottleneck [measured] `services/payments/RESULTS.md`: at PSP 0 ms, 904 RPS; Postgres container about 243% CPU with LWLock waits, payments Node about 84% CPU (the CPU breakdown was measured before the NestJS 12 / Fastify 5 upgrade, not repeated; the 904 RPS is from the re-measurement). The limit is the database: 3 commits per payment (insert, `PENDING -> CHARGED`, final state with the outbox row) plus inventory's confirm. The file's suggested next step is to collapse transitions that need no durability between them, or use `synchronous_commit=off` for the intermediate step. Commit count per business operation is the number to watch: [derived] at the planned 400 payments/s, 400 x 3 = 1 200 commits/s (`services/payments/CAPACITY.md`).
 - Detail worth knowing: the relay holds its row locks and a pool connection while it publishes (the publish happens inside the open transaction). A slow broker therefore holds one connection per relay; see the slow-dependency section in [reliability patterns](reliability-patterns.md). (Update: the relay now runs on its own 3-connection pool and the publish has a 5 s timeout, so a slow broker cannot starve the saga.)
 - Sibling repo: kafka-pay-lab has the same shape (`apps/api/src/infrastructure/outbox/outbox-relay.ts`: pessimistic write lock with `skip_locked`, batch of 50, "at-least-once ... consumers must be idempotent").
 
@@ -217,7 +217,7 @@ For "only one worker per job" with crash recovery this repo uses a lease (sectio
 - Code: `NotificationHandler.handle` in `services/notifications/src/handler.ts`; PK `(outbox_id, channel)` on `notifications.deliveries`; the provider receives `outboxId:channel` as its idempotency key.
 - Tests (`handler.test.ts`): "dedup: 20 concurrent deliveries of one event send once per channel" (`n == 2`, each call either completes or is told `InFlight`, never an error; the redelivery then skips both channels); "serial duplicates are skipped"; "exhausted retries dead-letter, and a retry of the message does not resend the channel that worked".
 - Measured [measured] `services/notifications/RESULTS.md`, 21 010 events (20 000 unique, 1 000 duplicate deliveries, 10 poison): deliveries sent 38 000 of 38 000 expected; duplicate `(event, channel)` rows 0; provider calls 38 180 = 38 000 + 90 flaky events x 2 retries, so the 1 000 duplicate deliveries cost no extra provider calls; dead letters 10 = exactly the poison messages.
-- Drill 3 [measured] `docs/failure-drills.md`: consumer SIGKILLed at 6 492 / 12 000 deliveries; restart finished 12 000 / 12 000, 0 duplicate rows, 0 stuck rows, 33.6 s because 25 claims were mid-send and wait out the 30 s lease.
+- Drill 3 [measured] `docs/failure-drills.md`: consumer SIGKILLed at 6 229 / 12 000 deliveries; restart finished 12 000 / 12 000, 0 duplicate rows, 0 stuck rows, 34.5 s because 25 claims were mid-send and wait out the 30 s lease.
 
 ## 9. Leases
 
@@ -225,7 +225,7 @@ For "only one worker per job" with crash recovery this repo uses a lease (sectio
 
 **When to pick it.** Per-item ownership with automatic recovery: claims on notifications, job rows, leader election with a heartbeat. Use `SKIP LOCKED` instead when a transaction can span the whole job and a crash simply aborts it (the payments relay).
 
-**Cost.** Recovery time equals the lease length: drill 3 took 33.6 s, bounded by the 30 s lease [measured]. A short lease recovers faster but raises the chance of two workers sending at once.
+**Cost.** Recovery time equals the lease length: drill 3 took 34.5 s, bounded by the 30 s lease [measured]. A short lease recovers faster but raises the chance of two workers sending at once.
 
 **Failure mode.** A worker slower than the lease loses ownership while still working, so two workers act. The mitigation here is the provider idempotency key. Clock skew between workers matters if each compares its own clock.
 

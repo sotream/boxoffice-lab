@@ -8,11 +8,11 @@
 | Sliding window log | Exact, but O(requests) memory per key. Rejected. |
 | Sliding window counter | Good approximation; slightly harder to explain. Runner-up. |
 | **Token bucket** | Chosen: allows controlled bursts (a human double-click), O(1) state, two numbers per key. |
-| Leaky bucket | Smooths output; we want to reject, not queue. Rejected. |
+| Leaky bucket (as a queue) | Smooths output by delaying requests; we want to reject, not delay. Rejected. |
 
 ## Where the state lives
 - In-process counters: wrong with N instances (each allows the full limit). Rejected.
-- **Redis + Lua**: one atomic round trip, shared clock via `TIME`. A `GET`-then-`SET` from the app would race (tested: 300 concurrent takes on a bucket of 100 allow ~100).
+- **Redis + Lua**: one atomic round trip, shared clock via `TIME`. A `GET`-then-`SET` from the app would race (tested: 300 concurrent takes on a bucket of 100 allow exactly 100).
 - Sticky routing + local buckets: fast but uneven and breaks on rebalancing. Rejected.
 
 ## Failure mode (decided by a failure drill, see docs/failure-drills.md)

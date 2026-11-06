@@ -1,0 +1,9 @@
+# drill 5: DLQ replay (node drills/dlq-replay.mjs)
+# date: 2026-11-06T18:38Z
+# node: v26.13.0
+# git: a1e7f99 (working tree may include uncommitted doc edits)
+# machine: MacBook Air M1, all services, Postgres, Redis, Redpanda on the same laptop
+
+email DOWN: push sent=200, email sent=0, dead-lettered=200
+email FIXED, 200 messages replayed: email sent=200, push sent=200 (push must still be 200: not resent)
+deliveries SENT: 400 of 400; duplicate rows: 0; not SENT: 0
