@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { Readiness, register } from "@boxoffice/platform";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { afterEach, describe, expect, it } from "vitest";
+import { Readiness, register, startOpsServer } from "@boxoffice/platform";
 import { signAdmission } from "@boxoffice/admission";
 import { buildApp } from "./app";
 import { GatewayService } from "./gateway.service";
@@ -14,24 +16,34 @@ const counterValue = async (name: string, labels: Record<string, string>) => {
   return m?.values.filter((v: any) => Object.entries(labels).every(([k, x]) => v.labels[k] === x)).reduce((s: number, v: any) => s + v.value, 0) ?? 0;
 };
 
-describe("gateway ops endpoints", () => {
+describe("gateway ops endpoints live on the ops listener, not on the public one", () => {
   const app = buildApp(make(limiter(true), limiter(true)));
-  it("/healthz is 200", async () => { expect((await app.inject({ url: "/healthz" })).statusCode).toBe(200); });
+  const servers: Server[] = [];
+  afterEach(() => { for (const s of servers.splice(0)) { s.close(); s.closeAllConnections(); } });
+  const ops = async (readiness: Readiness) => { const s = await startOpsServer(0, readiness, "127.0.0.1"); servers.push(s); return `http://127.0.0.1:${(s.address() as AddressInfo).port}`; };
+
+  it("the public port answers 404 for /healthz, /readyz and /metrics (through the normal gateway 404)", async () => {
+    for (const url of ["/healthz", "/readyz", "/metrics", "/metrics?x=1"]) {
+      const res = await app.inject({ url });
+      expect(res.statusCode, url).toBe(404);
+      expect(res.json()).toEqual({ error: "not found" });
+    }
+  });
+  it("/healthz is 200 on the ops port", async () => { expect((await fetch(`${await ops(new Readiness([]))}/healthz`)).status).toBe(200); });
   it("/readyz is 200 with no critical dependency down, 503 when one is", async () => {
-    expect((await app.inject({ url: "/readyz" })).statusCode).toBe(200);
-    const bad = buildApp(make(limiter(true), limiter(true)), [], { readiness: new Readiness([{ name: "redis", run: async () => { throw new Error("down"); } }]) });
-    const res = await bad.inject({ url: "/readyz" });
-    expect(res.statusCode).toBe(503);
-    expect(res.json().checks.redis.ok).toBe(false);
+    expect((await fetch(`${await ops(new Readiness([]))}/readyz`)).status).toBe(200);
+    const res = await fetch(`${await ops(new Readiness([{ name: "redis", run: async () => { throw new Error("down"); } }]))}/readyz`);
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as any).checks.redis.ok).toBe(false);
   });
   it("/metrics exposes RED metrics with the route pattern, not the raw path", async () => {
     await app.inject({ url: "/events/42/availability" });
     await new Promise((r) => setTimeout(r, 20));
-    const text = (await app.inject({ url: "/metrics" })).body;
+    const text = await (await fetch(`${await ops(new Readiness([]))}/metrics`)).text();
     expect(text).toContain('http_requests_total{method="GET",route="/events/:eventId/availability",status_class="2xx"');
     expect(text).not.toContain("/events/42");
   });
-  it("the fast path is unaffected: ops routes do not shadow journey routes and unknown paths still 404 as 'unmatched'", async () => {
+  it("the fast path is unaffected: unknown paths still 404 as 'unmatched'", async () => {
     expect((await app.inject({ url: "/events/1/availability" })).statusCode).toBe(200);
     expect((await app.inject({ url: "/admin" })).statusCode).toBe(404);
   });
@@ -95,6 +107,18 @@ describe("gateway business metrics", () => {
     const b2 = await counterValue("gateway_upstream_errors_total", { upstream: "queue", reason: "unreachable" });
     await make(limiter(true), limiter(true), [], new Error("ECONNREFUSED")).handle("POST", "/events/1/queue/join", "", "{}", "i");
     expect(await counterValue("gateway_upstream_errors_total", { upstream: "queue", reason: "unreachable" })).toBe(b2 + 1);
+  });
+
+  it("the upstream label comes from the route, not from comparing URLs: QUEUE_URL equal to INVENTORY_URL still labels both correctly", async () => {
+    const err = (upstream: string) => counterValue("gateway_upstream_errors_total", { upstream, reason: "unreachable" });
+    const same = new GatewayService({ inventoryUrl: "http://same", queueUrl: "http://same", secret }, limiter(true), limiter(true), async () => { throw new Error("ECONNREFUSED"); });
+    const before = { q: await err("queue"), i: await err("inventory") };
+    await same.handle("POST", "/events/1/queue/join", "", "{}", "i");
+    expect(await err("queue")).toBe(before.q + 1);
+    expect(await err("inventory")).toBe(before.i);
+    await same.handle("GET", "/events/1/availability", "", undefined, "i");
+    expect(await err("queue")).toBe(before.q + 1);
+    expect(await err("inventory")).toBe(before.i + 1);
   });
 
   it("admission rejections are counted", async () => {

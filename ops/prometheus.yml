@@ -9,7 +9,7 @@ rule_files:
 
 scrape_configs:
   - job_name: gateway
-    static_configs: [{ targets: ["host.docker.internal:3100"] }]
+    static_configs: [{ targets: ["host.docker.internal:3106"] }] # ops port (OPS_PORT) of the gateway: /metrics is not served on the public port 3100
   - job_name: inventory
     static_configs: [{ targets: ["host.docker.internal:3101"] }]
   - job_name: waiting-room
