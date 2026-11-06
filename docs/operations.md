@@ -35,7 +35,7 @@ The Postgres check runs on its own one- or two-connection pool, not the work poo
 - Every hop creates a new span id and keeps the caller's span as parent. Outgoing calls (gateway to inventory / waiting-room, payments to inventory confirm) send `x-request-id` and `traceparent` with the sending hop's span.
 - Every log line written inside a request has `requestId`, `traceId`, `spanId` and `parentSpanId`.
 - Payments to notifications: the outbox payload gets `trace: { requestId, traceparent }`, the relay turns it into the Kafka headers `x-request-id` and `traceparent`, and the notifications consumer continues the same trace (new span) and passes the headers on to the dead-letter topic. Grepping one request id in the logs of all services therefore follows a purchase from the gateway to the notification.
-- Gap: the payment row does not store the trace. A saga that was answered 202 and is finished later by the sweeper writes its outbox events without a request id. Storing the trace on the payment row needs a migration and a change in `payments.service.ts`, which was out of scope. The carry-over into the outbox is done by `withOutboxTrace` in `services/payments/src/db.ts`, a narrow wrapper around the pool; the proper fix is for the service to write `trace: traceFields()` into the payload itself.
+- The payment row stores the trace of the request that created it (`payments.trace`, migration `002_trace.sql`); `transition()` copies it into every outbox payload. A saga answered 202 and finished later by the sweeper therefore keeps the original request id and trace id in its Kafka headers. Covered by `services/payments/src/trace.test.ts`, which fails if the column is not written.
 
 Logs are one JSON object per line on stdout: `time`, `level`, `service`, `msg`, fields. Errors are serialised with `type`, `message`, `stack`, `code`, `cause`. `LOG_LEVEL` (trace, debug, info, warn, error, fatal, silent) defaults to `info`, and to `silent` under tests. Requests log at `error` for 5xx and at `debug` otherwise: a line per request is itself a cost at flash-sale rates.
 
@@ -199,5 +199,4 @@ On a route that does no work this is roughly 15 to 25 % of throughput, which is 
 - No distributed tracing backend: ids are propagated and logged, spans are not exported.
 - No end-to-end "confirmed to delivered" latency histogram (see the SLI table).
 - `payments_sagas` scans the payments table; no `status` index exists.
-- The payment trace is lost when the sweeper finishes a saga after a 202 (see Correlation).
 - The alert thresholds marked "starting value" are not calibrated.
