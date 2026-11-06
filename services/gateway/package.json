@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@boxoffice/admission": "workspace:*",
+    "@boxoffice/platform": "workspace:*",
     "fastify": "^5.12.8",
     "ioredis": "^5.4.0"
   },
