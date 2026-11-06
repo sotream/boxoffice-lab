@@ -1,3 +1,8 @@
 packages:
   - packages/*
   - services/*
+
+# Build scripts: esbuild ships its binary this way (needed by vitest); @nestjs/core only prints a donation banner.
+allowBuilds:
+  esbuild: true
+  "@nestjs/core": false
