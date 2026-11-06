@@ -5,5 +5,5 @@ export const delivered = counter("notifications_delivered_total", "Notifications
 /** Redelivered messages whose (event, channel) was already SENT: the at-least-once pipeline's duplicates, suppressed by the dedup key. */
 export const duplicatesSuppressed = counter("notifications_duplicate_suppressed_total", "Duplicate deliveries suppressed by the per-channel dedup key.", ["channel"]);
 export const dlq = counter("notifications_dlq_total", "Messages published to the dead-letter topic.");
-/** Remaining messages in a partition after the last processed batch (0 when caught up; not updated while no batches arrive). */
-export const consumerLag = gauge("notifications_consumer_lag_messages", "Consumer lag per partition as of the last processed batch.", ["partition"]);
+/** Remaining messages per partition (end offset minus committed offset), sampled from the broker every 10 s and after each batch. */
+export const consumerLag = gauge("notifications_consumer_lag_messages", "Consumer lag per partition (broker end offset minus committed offset), sampled every 10 s.", ["partition"]);
