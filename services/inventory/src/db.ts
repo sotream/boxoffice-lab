@@ -4,8 +4,9 @@ import { Pool } from "pg";
 
 export const DEFAULT_URL = "postgres://lab:lab@localhost:55432/lab";
 
-export function createPool(max = Number(process.env.PG_POOL ?? 20)): Pool {
-  return new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_URL, max, connectionTimeoutMillis: 2000, statement_timeout: 5000 });
+/** statementTimeoutMs 0 disables it: migrations and seeding are bulk operations, not request traffic. */
+export function createPool(max = Number(process.env.PG_POOL ?? 20), statementTimeoutMs = 5000): Pool {
+  return new Pool({ connectionString: process.env.DATABASE_URL ?? DEFAULT_URL, max, connectionTimeoutMillis: 2000, statement_timeout: statementTimeoutMs });
 }
 
 export async function migrate(pool: Pool): Promise<void> {

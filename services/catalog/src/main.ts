@@ -5,7 +5,7 @@ import { AppModule } from "./app.module";
 import { createPool, migrate, seed } from "./db";
 
 async function bootstrap() {
-  const pool = createPool(2);
+  const pool = createPool(2, 0);
   await migrate(pool);
   if (process.env.SEED_EVENTS) await seed(pool, Number(process.env.SEED_EVENTS));
   await pool.end();
