@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" role="img" aria-labelledby="t d">
+  <title id="t">Flash sale estimation chain</title>
+  <desc id="d">From 50 000 users in 60 seconds to 150 000 attempts, 2 500 requests per second, an admission budget of 500 users per second, a 100 second drain, 333 payments per second and 38 000 notifications drained in 27 seconds.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#33415c"/></marker>
+    <style>
+      text{font-family:-apple-system,"Segoe UI",Helvetica,Arial,sans-serif;fill:#14233b}
+      .h{font-size:15px;font-weight:700}
+      .big{font-size:24px;font-weight:700}
+      .s{font-size:12.5px}
+      .m{font-size:12px;font-weight:700;fill:#7a1f1f}
+      .l{font-size:11.5px;fill:#33415c;font-style:italic}
+      .b{fill:#cfe0f5;stroke:#3b6aa8;stroke-width:1.5}
+      .k{fill:#fbe3b5;stroke:#a8741a;stroke-width:1.5}
+      .g{fill:#cdeed7;stroke:#2f8a4f;stroke-width:1.5}
+      .e{stroke:#33415c;stroke-width:1.6;fill:none}
+    </style>
+  </defs>
+  <rect x="0" y="0" width="900" height="520" rx="14" fill="#f3f5f9" stroke="#c4ccd9"/>
+  <text class="h" x="450" y="32" text-anchor="middle">Flash sale: 20 000 seats, 50 000 users. Derived, then measured.</text>
+
+  <rect class="b" x="20" y="60" width="250" height="110" rx="8"/>
+  <text class="s" x="145" y="82" text-anchor="middle">arrivals</text>
+  <text class="big" x="145" y="115" text-anchor="middle">50 000</text>
+  <text class="s" x="145" y="138" text-anchor="middle">users within 60 s</text>
+  <text class="l" x="145" y="158" text-anchor="middle">average day: 23 RPS</text>
+
+  <rect class="b" x="325" y="60" width="250" height="110" rx="8"/>
+  <text class="s" x="450" y="82" text-anchor="middle">attempts</text>
+  <text class="big" x="450" y="115" text-anchor="middle">150 000</text>
+  <text class="s" x="450" y="138" text-anchor="middle">each user retries ~3 times</text>
+  <text class="l" x="450" y="158" text-anchor="middle">50 000 x 3</text>
+
+  <rect class="b" x="630" y="60" width="250" height="110" rx="8"/>
+  <text class="s" x="755" y="82" text-anchor="middle">peak load</text>
+  <text class="big" x="755" y="115" text-anchor="middle">2 500 RPS</text>
+  <text class="s" x="755" y="138" text-anchor="middle">on inventory, unprotected</text>
+  <text class="l" x="755" y="158" text-anchor="middle">150 000 / 60 s</text>
+
+  <path class="e" d="M270 115 H325" marker-end="url(#a)"/>
+  <path class="e" d="M575 115 H630" marker-end="url(#a)"/>
+  <path class="e" d="M755 170 V200 H145 V215" marker-end="url(#a)"/>
+  <text class="l" x="450" y="194" text-anchor="middle">protect inventory with a queue</text>
+
+  <rect class="k" x="20" y="215" width="250" height="130" rx="8"/>
+  <text class="s" x="145" y="237" text-anchor="middle">admission budget</text>
+  <text class="big" x="145" y="270" text-anchor="middle">500 users/s</text>
+  <text class="s" x="145" y="293" text-anchor="middle">2 300 x 0.6 / 3 = 460, set to 500</text>
+  <text class="m" x="145" y="315" text-anchor="middle">measured: ~2 300 hold RPS</text>
+  <text class="l" x="145" y="334" text-anchor="middle">0.6 headroom, 3 attempts per user</text>
+
+  <rect class="k" x="325" y="215" width="250" height="130" rx="8"/>
+  <text class="s" x="450" y="237" text-anchor="middle">worst wait for the last user</text>
+  <text class="big" x="450" y="270" text-anchor="middle">100 s</text>
+  <text class="s" x="450" y="293" text-anchor="middle">50 000 / 500 = 100 s</text>
+  <text class="m" x="450" y="315" text-anchor="middle">queue: ~7 600 RPS / instance</text>
+  <text class="l" x="450" y="334" text-anchor="middle">10 000 status polls/s -> 3 instances</text>
+
+  <rect class="g" x="630" y="215" width="250" height="130" rx="8"/>
+  <text class="s" x="755" y="237" text-anchor="middle">payments</text>
+  <text class="big" x="755" y="270" text-anchor="middle">333 / s</text>
+  <text class="s" x="755" y="293" text-anchor="middle">20 000 seats / 60 s (plan 400/s)</text>
+  <text class="m" x="755" y="315" text-anchor="middle">measured: ~700/s, Postgres-bound</text>
+  <text class="l" x="755" y="334" text-anchor="middle">in flight: 400 x 0.1 s = ~40</text>
+
+  <path class="e" d="M270 280 H325" marker-end="url(#a)"/>
+  <path class="e" d="M575 280 H630" marker-end="url(#a)"/>
+  <path class="e" d="M755 345 V375 H450 V390" marker-end="url(#a)"/>
+
+  <rect class="g" x="250" y="390" width="400" height="100" rx="8"/>
+  <text class="s" x="450" y="412" text-anchor="middle">notifications</text>
+  <text class="big" x="450" y="445" text-anchor="middle">38 000 drained in 27 s</text>
+  <text class="s" x="450" y="466" text-anchor="middle">20 000 payments: 90% x 2 channels + 10% x 1</text>
+  <text class="m" x="450" y="483" text-anchor="middle">measured: 1 393 deliveries/s (3 partitions), need ~630/s</text>
+
+  <text class="l" x="20" y="510">MacBook Air M1, k6 on the same machine: per-instance planning numbers.</text>
+</svg>
