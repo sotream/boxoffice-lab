@@ -179,7 +179,7 @@ describe("handler: concurrent duplicates", () => {
 });
 
 // ---------------- consumer.ts with a fake kafkajs ----------------
-const fake = vi.hoisted(() => ({ eachBatch: undefined as undefined | ((a: unknown) => Promise<void>), dlq: [] as { topic: string; messages: { key: unknown; value: string; headers: Record<string, string> }[] }[] }));
+const fake = vi.hoisted(() => ({ failSend: false, committed: [] as { partition: number; offset: string }[], ends: [] as { partition: number; offset: string; low: string }[], adminCalls: 0, failAdmin: false, failAdminConnect: false, eachBatch: undefined as undefined | ((a: unknown) => Promise<void>), dlq: [] as { topic: string; messages: { key: unknown; value: string; headers: Record<string, string> }[] }[] }));
 vi.mock("kafkajs", () => ({
   Kafka: class {
     consumer() {
@@ -188,7 +188,14 @@ vi.mock("kafkajs", () => ({
         run: async (cfg: { eachBatch: (a: unknown) => Promise<void> }) => { fake.eachBatch = cfg.eachBatch; }
       };
     }
-    producer() { return { connect: async () => undefined, disconnect: async () => undefined, send: async (m: never) => { fake.dlq.push(m); } }; }
+    admin() {
+      return {
+        connect: async () => { if (fake.failAdminConnect) throw new Error("admin unreachable"); }, disconnect: async () => { if (fake.failAdminConnect) throw new Error("admin gone"); },
+        fetchOffsets: async () => { fake.adminCalls++; if (fake.failAdmin) throw new Error("admin down"); return [{ topic: "payments", partitions: fake.committed }]; },
+        fetchTopicOffsets: async () => fake.ends
+      };
+    }
+    producer() { return { connect: async () => undefined, disconnect: async () => undefined, send: async (m: never) => { if (fake.failSend) throw new Error("broker down"); fake.dlq.push(m); } }; }
   }
 }));
 
@@ -228,6 +235,54 @@ describe("consumer: dead-letter routing and partition progress (real consumer.ts
     expect(r.resolved).toEqual(["0", "1", "2", "3"]);
     expect(r.dlq.map((d) => d.value)).toContain("{not json");
     expect(p.ok.get(`${BASE + 5}:push`)).toBe(1);
+  });
+
+  it("the DLQ counter counts messages that were published, not attempts: a failed publish is redelivered and counted once", async () => {
+    const { dlq: counter } = await import("./metrics");
+    const value = async () => ((await counter.get()).values[0]?.value ?? 0);
+    const before = await value();
+    const p = provider(new Map());
+    fake.failSend = true;
+    try {
+      const r1 = await drive(p.send, ["{not json"]);
+      expect(r1.error).toBeInstanceOf(Error); // the batch fails and Kafka will redeliver it
+      const r2 = await drive(p.send, ["{not json"]);
+      expect(r2.error).toBeInstanceOf(Error);
+      expect(await value()).toBe(before); // nothing was published, nothing counted
+    } finally { fake.failSend = false; }
+    await drive(p.send, ["{not json"]);
+    expect(await value()).toBe(before + 1);
+  });
+
+  it("consumer lag is sampled from the broker on a timer, so it grows while no batch is processed", async () => {
+    const { runConsumer } = await import("./consumer");
+    const { consumerLag } = await import("./metrics");
+    const lagOf = async (partition: string) => (await consumerLag.get()).values.find((v) => v.labels.partition === partition)?.value;
+    const h = new NotificationHandler(pool, provider(new Map()).send, { maxAttempts: 2, backoffMs: 0 });
+    fake.committed = [{ partition: 7, offset: "100" }];
+    fake.ends = [{ partition: 7, offset: "130", low: "0" }];
+    const c = await runConsumer(h, { broker: "fake:1", topic: "payments", groupId: "lag", lagSampleMs: 20 });
+    try {
+      await vi.waitFor(async () => expect(await lagOf("7")).toBe(30));
+      fake.ends = [{ partition: 7, offset: "500", low: "0" }]; // the consumer is stalled: no batch arrives, the broker moves on
+      await vi.waitFor(async () => expect(await lagOf("7")).toBe(400));
+      fake.failAdmin = true; // a failing sample must not stop the consumer or throw
+      const calls = fake.adminCalls;
+      await vi.waitFor(() => expect(fake.adminCalls).toBeGreaterThan(calls + 1));
+    } finally { fake.failAdmin = false; await c.stop(); }
+    const after = fake.adminCalls;
+    await new Promise((r) => setTimeout(r, 80));
+    expect(fake.adminCalls).toBe(after); // stop() ends the sampling
+  });
+
+  it("an unreachable admin client does not stop the consumer: it still delivers and stops cleanly", async () => {
+    fake.failAdminConnect = true;
+    try {
+      const p = provider(new Map());
+      const r = await drive(p.send, [ev(60, "payment.confirmed")]);
+      expect(r.error).toBeUndefined();
+      expect(p.ok.get(`${BASE + 60}:push`)).toBe(1);
+    } finally { fake.failAdminConnect = false; }
   });
 
   it("regression: valid JSON that is not a payment event (null, numbers, missing fields) is dead-lettered, not an endless batch failure", async () => {
@@ -285,5 +340,16 @@ describe("consumer: dead-letter routing and partition progress (real consumer.ts
     })).rejects.toThrow("db down");
     expect(resolved).toEqual([]);
     await c.stop();
+  });
+});
+
+import { partitionLag } from "./consumer";
+describe("partitionLag", () => {
+  it("is end offset minus committed offset, never negative, and counts from the low watermark when nothing is committed", () => {
+    const lag = partitionLag(
+      [{ partition: 0, offset: "7" }, { partition: 1, offset: "-1" }, { partition: 3, offset: "50" }],
+      [{ partition: 0, offset: "10", low: "0" }, { partition: 1, offset: "20", low: "5" }, { partition: 2, offset: "4", low: "0" }, { partition: 3, offset: "40", low: "0" }]
+    );
+    expect(Object.fromEntries(lag)).toEqual({ 0: 3, 1: 15, 2: 4, 3: 0 });
   });
 });
