@@ -6,6 +6,9 @@ import { Counter } from "k6/metrics";
 const BASE = __ENV.BASE || "http://localhost:3100";
 const SEATS = Number(__ENV.SEATS || 5000);
 const USERS = Number(__ENV.USERS || 2000);
+// Users arrive spread over this many seconds. 0 = all 2000 dial in the same millisecond, which overflows the OS accept queue
+// on a laptop (macOS kern.ipc.somaxconn is 128 whatever the app asks for) and shows up as "dial: i/o timeout" in k6.
+const SPREAD = Number(__ENV.ARRIVAL_SPREAD_S ?? 3);
 const held = new Counter("e2e_holds_ok");
 const taken = new Counter("e2e_holds_conflict");
 const limited = new Counter("e2e_holds_429");
@@ -18,6 +21,7 @@ export const options = {
 };
 
 export default function () {
+  if (SPREAD > 0) sleep(Math.random() * SPREAD);
   const userId = `user-${__VU}`;
   http.post(`${BASE}/events/1/queue/join`, JSON.stringify({ userId }), { ...J, tags: { name: "join" } });
   let token = null;
