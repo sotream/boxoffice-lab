@@ -9,8 +9,8 @@
 - Rule that falls out of this: **never hold a DB connection while waiting for the PSP.** The code opens a transaction only for the state change, so a pool of 20 serves 40+ in-flight payments.
 
 ## Database
-- Measured ceiling: **~700 payments/s per instance with a 20-connection pool, bounded by Postgres** (3 transactions per payment, see RESULTS.md).
-- instances = ceil(400 / (700 x 0.6)) = **1**, run **2** for availability. The pool, not Node CPU, is the limit.
+- Measured: **528 payments/s per instance with a realistic 100 ms PSP** (compensation path, pool 20); **697/s with the PSP removed**, which shows the database, not the PSP wait, is the ceiling (3 transactions per payment, see RESULTS.md).
+- instances = ceil(400 / (528 x 0.6)) = **2** (with the 697 figure it would be 1, but that figure excludes the PSP latency we always have). The second instance also covers availability.
 - Write load = 400 x 3 commits = **~1 200 TPS**. One primary is enough; scaling beyond means batching state transitions (fewer commits per payment) before sharding.
 
 ## Storage
