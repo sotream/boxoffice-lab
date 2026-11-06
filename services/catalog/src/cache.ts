@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { cacheRequests } from "./metrics";
 
 export interface CacheStats { hits: number; misses: number; coalesced: number; errors: number }
 
@@ -21,16 +22,17 @@ export class Cache {
 
   async getOrLoad<T>(key: string, loader: () => Promise<T>): Promise<T> {
     let cached: string | null = null;
-    try { cached = await this.redis.get(key); } catch { this.stats.errors++; } // cache down: act as a miss, never fail the read
-    if (cached !== null) { this.stats.hits++; return JSON.parse(cached) as T; }
+    try { cached = await this.redis.get(key); } catch { this.stats.errors++; cacheRequests.inc({ result: "error" }); } // cache down: act as a miss, never fail the read
+    if (cached !== null) { this.stats.hits++; cacheRequests.inc({ result: "hit" }); return JSON.parse(cached) as T; }
 
     const running = this.inflight.get(key);
-    if (running) { this.stats.coalesced++; return running as Promise<T>; }
+    if (running) { this.stats.coalesced++; cacheRequests.inc({ result: "coalesced" }); return running as Promise<T>; }
 
     this.stats.misses++;
+    cacheRequests.inc({ result: "miss" });
     const p = (async () => {
       const value = await loader();
-      try { await this.redis.set(key, JSON.stringify(value), "EX", this.ttlWithJitter()); } catch { this.stats.errors++; }
+      try { await this.redis.set(key, JSON.stringify(value), "EX", this.ttlWithJitter()); } catch { this.stats.errors++; cacheRequests.inc({ result: "error" }); }
       return value;
     })().finally(() => this.inflight.delete(key));
     this.inflight.set(key, p);

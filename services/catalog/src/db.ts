@@ -1,13 +1,13 @@
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { createPool as createSharedPool, migrate as migrateDir } from "@boxoffice/platform";
 import { Pool } from "pg";
 
 /** statementTimeoutMs 0 disables it: migrations and seeding are bulk operations, not request traffic. */
 export function createPool(max = 20, statementTimeoutMs = 5000): Pool {
-  return new Pool({ connectionString: process.env.DATABASE_URL ?? "postgres://lab:lab@localhost:55432/lab", max, connectionTimeoutMillis: 2000, statement_timeout: statementTimeoutMs });
+  return createSharedPool({ max, statementTimeoutMs, applicationName: "catalog" });
 }
 export async function migrate(pool: Pool): Promise<void> {
-  await pool.query(readFileSync(join(__dirname, "..", "migrations", "001_init.sql"), "utf8"));
+  await migrateDir(pool, join(__dirname, "..", "migrations"));
 }
 
 export const ARTISTS = ["rock", "jazz", "opera", "techno", "folk", "metal", "ballet", "comedy", "football", "tennis", "festival", "musical", "orchestra", "stand-up", "marathon", "circus"];
