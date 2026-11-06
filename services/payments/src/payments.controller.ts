@@ -1,5 +1,6 @@
 import { BadRequestException, Body, Controller, Headers, Inject, Post, Res } from "@nestjs/common";
 import { PaymentsService } from "./payments.service";
+import { finalResults, inProgress, stateLabel } from "./metrics";
 
 interface Body_ { eventId: number; userId: string; seatIds: number[]; amountCents: number }
 
@@ -15,6 +16,7 @@ export class PaymentsController {
     }
     const r = await this.svc.pay({ idempotencyKey: key, ...b });
     // 202: accepted, outcome not final yet; retry with the same Idempotency-Key to read the result.
+    if (r.kind === "in-progress") inProgress.inc(); else finalResults.inc({ status: stateLabel(r.payment.status) });
     res.status(r.kind === "in-progress" ? 202 : 200);
     return { status: r.payment.status, paymentId: r.payment.id, inProgress: r.kind === "in-progress" };
   }

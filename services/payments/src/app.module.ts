@@ -1,10 +1,12 @@
 import { Body, Controller, Module, Post } from "@nestjs/common";
+import { outgoingHeaders, registerPoolMetrics } from "@boxoffice/platform";
 import { createPool } from "./db";
 import { PaymentsController } from "./payments.controller";
 import { PaymentsService, StepTimeout } from "./payments.service";
 import { FakePsp } from "./psp";
 
 const pool = createPool(Number(process.env.PG_POOL ?? 20));
+registerPoolMetrics(pool, "main");
 const psp = new FakePsp(Number(process.env.PSP_LATENCY_MS ?? 100), Number(process.env.PSP_FAIL_RATE ?? 0));
 const inventoryUrl = process.env.INVENTORY_URL ?? "http://localhost:3101";
 
@@ -26,7 +28,7 @@ class AdminController {
     useFactory: () => new PaymentsService(pool, psp, async (eventId, seatIds, userId) => {
       try {
         const res = await fetch(`${inventoryUrl}/events/${eventId}/confirm`, {
-          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ seatIds, userId }),
+          method: "POST", headers: { "content-type": "application/json", ...outgoingHeaders() }, body: JSON.stringify({ seatIds, userId }),
           signal: AbortSignal.timeout(Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000))
         });
         if (res.status >= 500) throw new StepTimeout(`inventory ${res.status}`); // unknown outcome, not "seats lost"

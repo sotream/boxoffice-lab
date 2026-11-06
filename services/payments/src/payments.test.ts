@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createPool, migrate } from "./db";
 import { OutboxRelay } from "./outbox-relay";
-import { PaymentsService, PaymentRequest, StepTimeout } from "./payments.service";
+import { FaultHook, FaultPoint, PaymentsService, PaymentRequest, StepTimeout } from "./payments.service";
 import { FakePsp } from "./psp";
+import { registerRaceTests } from "./saga.races";
+import { registerPropertyTests } from "./saga.property";
 
 const pool = createPool(30);
 beforeAll(async () => { await migrate(pool); });
@@ -11,6 +13,12 @@ afterAll(async () => { await pool.end(); });
 
 const req = (key: string, over: Partial<PaymentRequest> = {}): PaymentRequest =>
   ({ idempotencyKey: key, eventId: 1, userId: "u1", seatIds: [1, 2], amountCents: 5000, ...over });
+/** One-shot crash: throws the first time `point` is reached (optionally only for a given transition target). */
+const crashOnce = (point: FaultPoint, to?: string): FaultHook => {
+  let fired = false;
+  return (p, info) => { if (!fired && p === point && (to === undefined || info.to === to)) { fired = true; throw new Error(`crash at ${point}`); } };
+};
+const statusOf = async (id = 1) => (await pool.query("SELECT status FROM payments.payments WHERE id=$1", [id])).rows[0].status as string;
 const outbox = async () => (await pool.query("SELECT payload->>'eventType' AS t FROM payments.outbox ORDER BY id")).rows.map((r) => r.t);
 
 describe("payments saga", () => {
@@ -50,20 +58,17 @@ describe("payments saga", () => {
 
   it("crash after charge: resume finishes the saga and does not double charge", async () => {
     const psp = new FakePsp();
-    const svc = new PaymentsService(pool, psp, async () => true);
-    svc.crashAt = "after-charge";
+    const svc = new PaymentsService(pool, psp, async () => true, 2000, crashOnce("after-charge"));
     await expect(svc.pay(req("k5"))).rejects.toThrow("crash");
-    expect((await pool.query("SELECT status FROM payments.payments")).rows[0].status).toBe("CHARGED");
-    svc.crashAt = undefined;
+    expect(await statusOf()).toBe("PENDING"); // money taken, state not yet recorded
     expect((await svc.resume(1)).status).toBe("CONFIRMED");
-    expect(psp.charges.size).toBe(1);
+    expect(psp.charges.size).toBe(1); // the retry hit the same key
+    expect(psp.chargeCalls).toBe(2);
   });
 
   it("crash after confirm: resume does not duplicate the event", async () => {
-    const svc = new PaymentsService(pool, new FakePsp(), async () => true);
-    svc.crashAt = "after-confirm";
+    const svc = new PaymentsService(pool, new FakePsp(), async () => true, 2000, crashOnce("after-confirm"));
     await expect(svc.pay(req("k6"))).rejects.toThrow("crash");
-    svc.crashAt = undefined;
     await svc.resume(1); await svc.resume(1);
     expect(await outbox()).toEqual(["payment.confirmed"]);
   });
@@ -72,11 +77,9 @@ describe("payments saga", () => {
 describe("compensation and compare-and-set", () => {
   it("crash after refund: resume retries with the same key, one effective refund, one event", async () => {
     const psp = new FakePsp();
-    const svc = new PaymentsService(pool, psp, async () => false);
-    svc.crashAt = "after-refund";
+    const svc = new PaymentsService(pool, psp, async () => false, 2000, crashOnce("after-refund"));
     await expect(svc.pay(req("k7"))).rejects.toThrow("crash");
-    expect((await pool.query("SELECT status FROM payments.payments")).rows[0].status).toBe("CHARGED");
-    svc.crashAt = undefined;
+    expect(await statusOf()).toBe("REFUNDING"); // claimed, refund issued, outcome not yet recorded
     expect((await svc.resume(1)).status).toBe("REFUNDED");
     expect(psp.refundCalls).toBe(2); // the retry did call the provider...
     expect(psp.refundsApplied).toBe(1); // ...but the key made it a no-op
@@ -166,3 +169,7 @@ describe("outbox relay", () => {
     expect(new Set(sent).size).toBe(sent.length);
   });
 });
+
+// Same file, same pool: these suites share the payments tables, so they must not run in parallel workers.
+registerRaceTests(pool);
+registerPropertyTests(pool);
