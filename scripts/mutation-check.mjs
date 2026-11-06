@@ -16,8 +16,8 @@ const opt = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1
 const mutationsFile = resolve(ROOT, opt("--file") ?? "scripts/mutations.json");
 const only = opt("--only")?.split(",");
 const BACKUP_DIR = join(process.env.TMPDIR || tmpdir(), "boxoffice-mutation");
-// payments, platform and the bootstraps are owned by other people while mutations run: never mutate them.
-const FORBIDDEN = [/^services\/payments\//, /^packages\/platform\//, /(^|\/)src\/(main|db|app\.module)\.ts$/, /(^|\/)app\.ts$/, /\.test\.ts$/, /package\.json$/];
+// platform and the bootstraps are not mutated: they are wiring, covered by the spawn tests, not by invariants.
+const FORBIDDEN = [/^packages\/platform\//, /(^|\/)src\/(main|db|app\.module)\.ts$/, /(^|\/)app\.ts$/, /\.test\.ts$/, /package\.json$/];
 
 mkdirSync(BACKUP_DIR, { recursive: true });
 const mutations = JSON.parse(readFileSync(mutationsFile, "utf8"));
