@@ -15,4 +15,4 @@
 - Kafka: 300 B x 21k events = 6 MB per sale; retention 7 days is trivial.
 
 ## Provider limits
-- Email providers throttle (typically 10-100 msg/s per account). With a 630/s target the sender needs a token-bucket on the **outbound** side (same algorithm as the gateway ADR) or several provider accounts. A 429 from the provider is a retryable error with backoff.
+- Email providers throttle (often 10-100 msg/s per account depending on plan, [folk]; check the chosen provider's quota). With a 630/s target the sender needs a token-bucket on the **outbound** side (same algorithm as the gateway ADR) or several provider accounts. A 429 from the provider is a retryable error with backoff.

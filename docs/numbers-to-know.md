@@ -30,31 +30,33 @@ Orders of magnitude to remember (folk knowledge, approximate):
 |---|---|---|
 | Postgres primary, simple indexed reads | 10k-50k+ QPS per node | Depends on cache hit rate and cores |
 | Postgres primary, simple writes (commit each) | A few thousand TPS on SSD | fsync per commit is the limit; batching helps |
-| Redis single node | ~100k ops/s | Single-threaded; pipelining goes higher |
+| Redis single node | ~100k ops/s | Commands execute on one thread (I/O threads are optional); pipelining goes higher |
 | Kafka partition | ~10 MB/s per partition is a safe planning number | Brokers do much more in aggregate |
 | Node/Fastify instance, trivial handler | Several thousand to 20k+ RPS per core | Any real I/O or DB call lowers it by an order of magnitude |
 | Nginx / load balancer | 10k-50k+ RPS per core | TLS termination costs extra |
 | Elasticsearch node | hundreds to low thousands of queries/s | Query complexity dominates |
-| SQS / managed queue | Effectively unbounded standard queue throughput | Per-message ack and delay built in |
+| SQS / managed queue | Very high for standard queues; check the vendor's quotas | Per-message ack and delay built in |
 
 ### Measured in this lab (laptop)
 
-All from the linked `RESULTS.md`. Setup: MacBook Air M1, Node 22 + Fastify, Postgres 17 and Redis 7 in Docker, k6 on the same machine.
+All from the linked `RESULTS.md`. Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5 (the gateway is plain Fastify 5), Postgres 17 and Redis 7 in Docker, k6 on the same machine.
 
 | Component and scenario | Result | Source |
 |---|---|---|
-| Inventory hold, atomic UPDATE, 100k seats, pool 20 | 2 359 RPS, p99 37.7 ms | [inventory](../services/inventory/RESULTS.md) |
-| Inventory hold, 20 hot seats | 2 780 RPS (losers get an immediate 409) | [inventory](../services/inventory/RESULTS.md) |
-| Waiting room status/join, Redis 7 | 7 656 RPS, p99 27.8 ms | [waiting-room](../services/waiting-room/RESULTS.md) |
-| Gateway hop (IP limiter + proxy) | 2 244 direct -> 1 742 through gateway | [gateway](../services/gateway/RESULTS.md) |
-| Catalog search, ranked FTS, no cache | 684 RPS, p99 292 ms | [catalog](../services/catalog/RESULTS.md) |
-| Catalog search, FTS date order | 4 387 RPS | [catalog](../services/catalog/RESULTS.md) |
-| Catalog search, ranked FTS + Redis cache | 15 236 RPS, p99 8.1 ms | [catalog](../services/catalog/RESULTS.md) |
-| Catalog rare term, ILIKE vs GIN | 25 RPS vs 2 177 RPS | [catalog](../services/catalog/RESULTS.md) |
-| Payments saga, PSP 100 ms | 528 RPS (3 commits per payment) | [payments](../services/payments/RESULTS.md) |
-| Payments saga, PSP 0 ms | 697 RPS, Postgres is the limit | [payments](../services/payments/RESULTS.md) |
+| Inventory hold, atomic UPDATE, 100k seats, pool 20 | 2 654 RPS, p99 31.7 ms | [inventory](../services/inventory/RESULTS.md) |
+| Inventory hold, 20 hot seats | 3 222 RPS (losers get an immediate 409) | [inventory](../services/inventory/RESULTS.md) |
+| Waiting room status/join, Redis 7 | 10 134 RPS, p99 22.3 ms | [waiting-room](../services/waiting-room/RESULTS.md) |
+| Gateway hop (IP limiter + proxy) | 2 485 direct -> 2 001 through gateway | [gateway](../services/gateway/RESULTS.md) |
+| Catalog search, ranked FTS, no cache | 536 RPS, p99 155.6 ms | [catalog](../services/catalog/RESULTS.md) |
+| Catalog search, FTS date order | 3 199 RPS, p99 75.4 ms | [catalog](../services/catalog/RESULTS.md) |
+| Catalog search, ranked FTS + Redis cache | 10 275 RPS, p99 9.0 ms | [catalog](../services/catalog/RESULTS.md) |
+| Catalog rare term, ILIKE vs GIN | 16 RPS vs 6 230 RPS | [catalog](../services/catalog/RESULTS.md) |
+| Payments saga, PSP 100 ms | 561 RPS (3 commits per payment) | [payments](../services/payments/RESULTS.md) |
+| Payments saga, PSP 0 ms | 904 RPS, Postgres was the limit when last profiled (before the upgrade) | [payments](../services/payments/RESULTS.md) |
 | Notification consumer, 1 / 3 partitions | 447 / 1 393 deliveries/s | [notifications](../services/notifications/RESULTS.md) |
-| Redis memory per queued user | ~100 B (6 MB for 41 145 queued users) | [waiting-room](../services/waiting-room/RESULTS.md) |
+| Redis memory per queued user | 7.68 MB for 57 497 queued users: at most 140 B each (includes admitted keys and baseline); planning figure 100 to 150 B | [waiting-room](../services/waiting-room/RESULTS.md) |
+
+The catalog, inventory, waiting-room, gateway and payments figures were re-measured on 2026-11-06 after the upgrade from NestJS 10 / Fastify 4 to NestJS 12 / Fastify 5; the notifications figures were not (that service uses neither). Raw outputs are in `docs/load-output/` and `docs/drill-output/`.
 
 k6 note: with 2 000 virtual users on the same laptop the load generator itself dominates the timings, so the gateway flash-sale run reports counts and invariants only, not percentiles. Always re-measure on target hardware.
 
@@ -65,12 +67,14 @@ Run with `pnpm --filter @boxoffice/capacity calc -- <command> ...`. Each result 
 | Formula | Command | Output |
 |---|---|---|
 | avg RPS = DAU x actions / 86 400; peak = avg x peak factor | `traffic --dau 1M --actions 10 --peak 10` | `avg = 1 000 000 x 10 / 86 400 = 115.7 RPS` and `peak = 115.7 x 10 = 1 157 RPS` (catalog) |
-| instances = ceil(peak / (per-instance x util)) | `instances --peak 2500 --per-instance 2300` | `instances = ceil(2 500 / (2 300 x 0.6)) = ceil(1.8) = 2` (inventory flash sale) |
+| instances = ceil(peak / (per-instance x util)) | `instances --peak 2500 --per-instance 2600` | `instances = ceil(2 500 / (2 600 x 0.6)) = ceil(1.6) = 2` (inventory flash sale) |
 | in flight = RPS x latency (Little's law) | `concurrency --rps 400 --latency-ms 100` | `in flight = 400 x 0.1 s = 40` (payments) |
 | storage = records/day x bytes x 365 x years x replication | `storage --records-per-day 2740 --bytes 600 --years 5` | `... = 9 000 900 000 B = 9.0 GB` (payments, 1M/year) |
 | shards = ceil(peak writes / (per-shard x util)) | `shards --peak-writes 30000 --per-shard 10000` | `shards = ceil(30 000 / (10 000 x 0.6)) = ceil(5) = 5` |
 | bandwidth = RPS x payload | `bandwidth --rps 400 --bytes 300` | `bandwidth = 400 x 300 B = 120 000 B/s = 120 KB/s = 0.96 Mbit/s` (payments events to Kafka) |
 | cache size = data x hot fraction | `cache --daily-read-bytes 300M --hot 0.2` | `cache = 300 MB x 0.2 = 60.0 MB` (catalog) |
+
+Rounding used across the docs: a measured figure is quoted exactly where it is a result, and rounded down for planning formulas. 2 654 measured holds/s is planned as 2 600, 10 134 queue RPS as 10 100, 1 393 deliveries/s as ~1 390, 447 as ~450. 1 157 RPS is the exact catalog peak (115.7 x 10) and 1 200 its rounded form in `catalog/CAPACITY.md`. 633/s is the exact required notification rate (38 000 / 60), ~630/s the rounded one. 904 payments/s is the PSP-0 ms run and 561 the PSP-100 ms run; the payments plan uses 561.
 
 Formulas without a command (do by hand): drain time = queue size / admission rate (50 000 / 500 = 100 s); admission rate = protected capacity x headroom / attempts per admitted user; required consumer rate = deliveries / target seconds (38 000 / 60 = 633/s).
 
@@ -110,7 +114,7 @@ Sizes (decimal, as interviewers expect): char 1 B, int64 8 B, UUID 16 B (36 as t
 - **Little's law.** Concurrent requests = RPS x latency in seconds. Use it to size pools and thread counts, and to see that a slow dependency multiplies in-flight work.
 - **Never hold a DB connection while waiting for an external call.** Open the transaction only for the state change; a pool of 20 then serves 40+ in-flight payments.
 - **Pareto cache.** The hot 20% of keys serves about 80% of reads; size the cache for 20% of the data set, add TTL with jitter (catalog: 30 s +-20%).
-- **Connection pool sizing.** Start with a pool near cores x 2 plus the number of disks on the DB side, and check against Little's law; a bigger pool does not raise throughput once the database is saturated (payments: pool 20, Postgres CPU-bound). Put a pooler in front when many instances share one primary.
+- **Connection pool sizing [folk].** Start with a pool near cores x 2 plus the number of disks on the DB side, and check against Little's law; a bigger pool does not raise throughput once the database is saturated (payments: pool 20, Postgres CPU-bound). Put a pooler in front when many instances share one primary.
 - **Single node first.** One Postgres primary handles several thousand simple TPS; shard or add a search cluster only when a stated number exceeds that.
 - **Partitions bound consumer parallelism.** 3 partitions means at most 3 busy consumers; choose the count from the peak parallelism you will ever need, since raising it later reorders keys.
 - **Retries need idempotency.** At-least-once delivery plus an idempotency key gives effectively-once results.

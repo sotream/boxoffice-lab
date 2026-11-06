@@ -4,7 +4,7 @@ Interview questions: **"Design search for an events site"**, **"Postgres full-te
 
 ## Requirements
 - FR: search events by words, optional city filter; fetch one event by id.
-- NFR: read-heavy (100:1 vs writes), p99 < 50 ms, tolerate seconds of staleness (a renamed event may show the old title for <= 30 s).
+- NFR: read-heavy (100:1 vs writes), p99 < 50 ms, tolerate seconds of staleness (a renamed event may show the old title for <= 36 s: 30 s TTL, +-20% jitter).
 
 ## API
 `GET /search?q=&city=&strategy=ilike|fts|fts-date&cache=0|1`, `GET /events/:id`

@@ -1,0 +1,14 @@
+# inventory: services/inventory/load/run.sh
+# date: 2026-11-06T18:46Z
+# node: v26.13.0  nestjs: 12.4.0  fastify: 5.12.8
+# git: a1e7f99 (working tree)
+# machine: MacBook Air M1, k6 and services on the same machine
+
+=== strategy=atomic-update range=100000 ===
+{"rps":2654,"p50":18,"p95":26.1,"p99":31.7,"ok":41144,"conflict":11972}
+=== strategy=atomic-update range=20 ===
+{"rps":3222,"p50":14.7,"p95":21.3,"p99":27.9,"ok":20,"conflict":64456}
+=== strategy=for-update range=100000 ===
+{"rps":2182,"p50":22.3,"p95":30.9,"p99":38.4,"ok":35496,"conflict":8180}
+=== strategy=for-update range=20 ===
+{"rps":3218,"p50":14.8,"p95":20.7,"p99":25.7,"ok":20,"conflict":64410}

@@ -1,0 +1,18 @@
+# catalog: services/catalog/load/run.sh (200 000 events, 50 VUs, 15 s each)
+# date: 2026-11-06T19:05Z
+# node: v26.13.0  nestjs: 12.4.0  fastify: 5.12.8
+# git: a1e7f99 (working tree)
+# machine: MacBook Air M1, k6 and services on the same machine
+
+=== common terms: ilike (date order) ===
+{"rps":2839,"p50":16,"p95":28.3,"p99":41.6}
+=== common terms: fts-date (GIN, date order) ===
+{"rps":3199,"p50":13.1,"p95":26.5,"p99":75.4}
+=== common terms: fts ranked (GIN + ts_rank) ===
+{"rps":536,"p50":90.7,"p95":125.9,"p99":155.6}
+=== common terms: fts ranked + Redis cache ===
+{"rps":10275,"p50":4.4,"p95":6.8,"p99":9}
+=== rare term: ilike ===
+{"rps":16,"p50":2834.2,"p95":3949.1,"p99":4105.2}
+=== rare term: fts-date ===
+{"rps":6230,"p50":7.7,"p95":11.2,"p99":14.6}

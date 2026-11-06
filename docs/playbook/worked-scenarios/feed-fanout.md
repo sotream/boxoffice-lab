@@ -29,7 +29,7 @@ Non-functional (assumptions)
 | Fan-out on write: timeline inserts | 1M posts x 200 followers = 200M inserts/day: `traffic --dau 200M --actions 1 --peak 5` | 2 315 avg, 11 574 peak inserts/s [derived] |
 | Fan-out on read: lookups | 40M reads/day x 200 followees = 8e9/day: `traffic --dau 40M --actions 200 --peak 5` | 92 593 avg, 462 963 peak lookups/s [derived] |
 | Work ratio | on-read 8e9 vs on-write 2e8 operations per day | on-read does 40x more operations at this read:post ratio [derived] |
-| Timeline memory per user | 200 entries x ~100 B per sorted-set member | ~20 KB [derived]; 100 B per member is the waiting-room figure (6 MB for 41 145 queued users, [measured] [waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md)), a sorted set with similar member size |
+| Timeline memory per user | 200 entries x ~100 B per sorted-set member | ~20 KB [derived]; 100 B per member is an assumption near the waiting-room measurement (7.68 MB for 57 497 queued users = up to 140 B each, an upper bound that includes other keys, [measured] [waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md)); at 140 B it would be 28 KB per user and 56 GB for 2M users [derived] |
 | Timeline memory, active users | 2M x 20 KB = 40 GB | 40 GB [derived]; only active users hold a timeline |
 | Posts storage | `storage --records-per-day 1M --bytes 1000 --years 1` | 1.1 TB with replication 3 [derived] |
 | Hydration lookups | each page shows 20 posts: 2 315 x 20 | 46 300 post lookups/s at peak [derived], above a safe Postgres read budget ([folk] 10k-50k QPS), so posts are cached too |
@@ -71,12 +71,12 @@ x10 means 20M DAU, 10M posts per day, 2B timeline inserts per day.
 
 ## What would be measured first
 
-1. Redis sorted-set cost at the intended shape: a k6 script `load/feed-write.js` (pipelined `ZADD` plus trim, 200 members per user across 2M timelines) and `load/feed-read.js` (`ZREVRANGE` 20 plus `MGET` 20). Copy the structure of [services/waiting-room/load/join.js](../../../services/waiting-room/load/join.js) (k6 against a Redis-backed sorted-set service), and the memory-per-entry check from [waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md) to confirm or replace the 100 B per member.
+1. Redis sorted-set cost at the intended shape: a k6 script `load/feed-write.js` (pipelined `ZADD` plus trim, 200 members per user across 2M timelines) and `load/feed-read.js` (`ZREVRANGE` 20 plus `MGET` 20). Copy the structure of [services/waiting-room/load/join.js](../../../services/waiting-room/load/join.js) (k6 against a Redis-backed sorted-set service), and the memory-per-entry check from [waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md) to confirm or replace the 100 B per member (the waiting-room run bounds it at 140 B, not 100 B).
 2. Fan-out consumer rate per partition: copy [services/notifications/load/bench.js](../../../services/notifications/load/bench.js) (a Node script, not k6: it produces N events with duplicates and poison messages into a 3-partition topic and verifies delivery counts) with a Zipf follower distribution including 10M-follower authors. Questions: inserts per second per worker, end-to-end lag p99, and duplicates after a worker kill (copy [drills/consumer-kill.mjs](../../../drills/consumer-kill.mjs)).
 3. The threshold: sweep it (1 000, 10 000, 100 000) and report read RPS and fan-out lag at each.
 
 ## Where this is proven in the repo / what is still paper
 
-Proven (other components): sorted set with ~100 B per member and a Redis-backed handler at 7 656 RPS ([waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md)); consumer scaling with partitions, 447 to 1 393 deliveries/s for 1 to 3 partitions, 0 duplicates ([notifications RESULTS.md](../../../services/notifications/RESULTS.md)); outbox publication ([failure-drills.md](../../failure-drills.md) drill 2).
+Proven (other components): sorted set with 100-140 B per member and a Redis-backed handler at 10 134 RPS ([waiting-room RESULTS.md](../../../services/waiting-room/RESULTS.md)); consumer scaling with partitions, 447 to 1 393 deliveries/s for 1 to 3 partitions, 0 duplicates ([notifications RESULTS.md](../../../services/notifications/RESULTS.md)); outbox publication ([failure-drills.md](../../failure-drills.md) drill 2).
 
 Still paper: the post and feed services, the hybrid threshold, the fan-out rate per worker, the hydration cache, every figure in the tables above that is labelled [derived].

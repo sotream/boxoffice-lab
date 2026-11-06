@@ -36,15 +36,15 @@ Status of timeouts: the first version of this playbook found that the only timeo
 
 | Call | Measured p99 | Source | Timeout = p99 x 3 [derived] |
 |---|---|---|---|
-| hold, direct to inventory, atomic-update, low contention | 37.7 ms | `services/inventory/RESULTS.md` | 113 ms |
-| availability direct to inventory | 44.9 ms | `services/gateway/RESULTS.md` | 135 ms |
-| availability through the gateway | 63.0 ms | `services/gateway/RESULTS.md` | 189 ms |
-| payment end to end, PSP 100 ms, saga on compensation path | 308 ms | `services/payments/RESULTS.md` | 924 ms |
-| catalog search, common term, FTS date order | 52.7 ms | `services/catalog/RESULTS.md` | 158 ms |
+| hold, direct to inventory, atomic-update, low contention | 31.7 ms | `services/inventory/RESULTS.md` | 95 ms |
+| availability direct to inventory | 43.0 ms | `services/gateway/RESULTS.md` | 129 ms |
+| availability through the gateway | 58.1 ms | `services/gateway/RESULTS.md` | 174 ms |
+| payment end to end, PSP 100 ms, saga on compensation path | 325 ms | `services/payments/RESULTS.md` | 975 ms |
+| catalog search, common term, FTS date order | 75.4 ms | `services/catalog/RESULTS.md` | 226 ms |
 
-Caveats: these p99s were measured with the load generator saturating one laptop, so they are inflated relative to an idle system and are a conservative starting point. The 3x factor is a folk rule, not a result. For the PSP the 100 ms is a fake (`FakePsp`, `PSP_LATENCY_MS`); a real timeout needs the real provider's p99, which this repo does not have. The inventory README states a goal of p99 below 100 ms for a hold; the derived 113 ms timeout is just above it, which is consistent.
+Caveats: these p99s were measured with the load generator saturating one laptop, so they are inflated relative to an idle system and are a conservative starting point. The 3x factor is a folk rule, not a result. For the PSP the 100 ms is a fake (`FakePsp`, `PSP_LATENCY_MS`); a real timeout needs the real provider's p99, which this repo does not have. The inventory README states a goal of p99 below 100 ms for a hold; the derived 95 ms timeout is now just below it, so a timeout derived this way would cut off holds that still meet the goal; use the 100 ms goal as the floor (this flipped from "just above" after the re-measurement).
 
-The Redis value of 200 ms is a judgement, not derived from a measured Redis p99. For scale: the hop through the gateway (limiter round trip plus proxy) costs 26.4 - 20.8 = 5.6 ms at p50 [derived from `services/gateway/RESULTS.md`], so 200 ms is about 36 times a normal limiter call.
+The Redis value of 200 ms is a judgement, not derived from a measured Redis p99. For scale: the hop through the gateway (limiter round trip plus proxy) costs 22.8 - 18.6 = 4.2 ms at p50 [derived from `services/gateway/RESULTS.md`], so 200 ms is about 48 times the whole hop (limiter round trip plus proxy).
 
 **Where shown.** `services/gateway/src/main.ts`: `enableOfflineQueue: false, commandTimeout: 200, maxRetriesPerRequest: 1`. Drill 1 (below) is the evidence of what the missing bound did before. kafka-pay-lab ADR 0008 uses a 1 second command timeout and one retry per command for the same reason (verified by reading it).
 
@@ -78,19 +78,19 @@ Only retry what is safe to repeat (next sections) and only on retryable errors; 
 
 **Where shown.**
 - `services/notifications/src/consumer.ts` handles each batch in chunks of `concurrency` (25 by default) with `Promise.all`, commits offsets only after the chunk is handled, and does not fetch more until the batch is done. The consumer sets its own pace: [measured] 447 deliveries/s with one partition consumed and 1 393 with three (`services/notifications/RESULTS.md`).
-- `OutboxRelay` takes at most `batch` rows (100) per drain and sleeps 50 ms when the outbox is empty (`services/payments/src/main.ts`).
+- `OutboxRelay` takes at most `batch` rows per drain (class default 100, 500 as configured in `services/payments/src/main.ts`) and sleeps 50 ms when the outbox is empty.
 - Not present: an outbound limiter toward the email provider. `services/notifications/CAPACITY.md` says providers throttle (typically 10 to 100 msg/s per account [folk]) and that a 630/s target needs an outbound token bucket or several accounts; no such code exists [paper design]. A provider 429 would be a retryable error with backoff.
 
 ## Load shedding and admission control
 
 **Protects against.** Demand above capacity, where accepting everything makes every request slow and then fail. Shedding chooses who gets rejected, early and cheaply.
 
-**Parameter and derivation.** The admission rate, from the protected capacity: `services/waiting-room/CAPACITY.md` computes admit/s = protected capacity x headroom / attempts per admitted user = 2 300 x 0.6 / 3 = about 460 users/s, configured as 500 [derived there, from the measured 2 300 hold RPS in `services/inventory/RESULTS.md`]. Drain time for 50 000 users is 50 000 / 500 = 100 s, the worst wait [derived].
+**Parameter and derivation.** The admission rate, from the protected capacity: `services/waiting-room/CAPACITY.md` computes admit/s = protected capacity x headroom / attempts per admitted user = 2 600 x 0.6 / 3 = about 520 users/s (531 unrounded), configured as 500, deliberately a little below the derived value [derived there, from the measured 2 654 hold RPS rounded down to 2 600, `services/inventory/RESULTS.md`]. Drain time for 50 000 users is 50 000 / 500 = 100 s, the worst wait [derived].
 
 **Where shown.**
-- Waiting room as shedding by queueing: users are not rejected, they are ordered and admitted at a fixed rate. It costs far less than the protected resource: [measured] about 7 656 requests/s per instance for join plus status polls (`services/waiting-room/RESULTS.md`) against about 2 300 holds/s for inventory.
+- Waiting room as shedding by queueing: users are not rejected, they are ordered and admitted at a fixed rate. It costs far less than the protected resource: [measured] about 10 134 requests/s per instance for join plus status polls (`services/waiting-room/RESULTS.md`) against about 2 654 holds/s for inventory.
 - Gateway: per-user token bucket 5/s burst 10, per-IP 50/s burst 100 (`services/gateway/CAPACITY.md`); a rejected request gets `429` with `Retry-After: 1` and never reaches inventory. Holds without a valid admission token get `403`. Tests: "forwards admitted holds and limits per user (burst 2, then 429)", "rejects holds without admission, never calling upstream".
-- End to end [measured] `services/gateway/RESULTS.md`: 2 000 users join, wait for admission at 500/s, then try 3 seats out of 5 000: 3 530 ok + 2 470 conflicts = 6 000 attempts, 0 rate-limited, 0 admission timeouts, 0 failed requests; held seats in Postgres 3 530 equal successful holds, no oversell. Latency percentiles are deliberately not reported because the 2 000 VUs on one laptop dominate the timing.
+- End to end [measured] `services/gateway/RESULTS.md`: 2 000 users join, wait for admission at 500/s, then try 3 seats out of 5 000, arrivals spread over 3 s: two saved runs gave 3 442 ok + 2 558 conflicts and 3 486 ok + 2 514 conflicts (6 000 attempts each), 0 rate-limited, 0 admission timeouts, 0 failed requests; held seats in Postgres equal successful holds in both, no oversell. The instantaneous variant (spread 0 s) had 96 failed requests (see the accept-queue section below) and still held seats = successful holds (3 408). Latency percentiles are deliberately not reported because the 2 000 VUs on one laptop dominate the timing.
 - Limit of the design: the admission rate is a fixed budget, not adaptive; the waiting-room ADR names adaptive admission (watching inventory p99) as the next step [paper design].
 
 ## Bulkheads [paper design]
@@ -123,7 +123,7 @@ Sibling repo: kafka-pay-lab ADR 0008 fails open for the whole throttler and reco
 
 **Where shown.**
 - Gateway: availability keeps working with the limiter down (fail open).
-- Payments: the broker is not on the payment's critical path. Drill 2 [measured]: Redpanda stopped while 300 payments are made: 300/300 payments OK in 0.7 s, 300 events buffered in the outbox, caught up 1.2 s after the broker returned, topic grew by exactly 300. No code change was needed.
+- Payments: the broker is not on the payment's critical path. Drill 2 [measured]: Redpanda stopped while 300 payments are made: 300/300 payments OK in 0.7 s, 300 events buffered in the outbox, caught up 0.7 s after the broker returned, topic grew by exactly 300. No code change was needed.
 - Catalog: stale results are a deliberate trade, event detail is invalidated on write, search results may age out (at most 36 s) (`services/catalog/adr/002`). Under pressure this is also a degradation lever: a longer TTL sheds database load.
 - Waiting room ADR: if Redis fails, users re-join (the join is idempotent); order is lost, not money.
 
@@ -131,7 +131,7 @@ Sibling repo: kafka-pay-lab ADR 0008 fails open for the whole throttler and reco
 
 **Protects against.** Retries (client, queue, relay) causing duplicate effects. Retrying is only safe on idempotent operations.
 
-**Where shown.** The full treatment is in [consistency and contention](consistency-and-contention.md): payments idempotency key (50 concurrent identical requests charge once), notifications dedup by `(outbox_id, channel)`, the PSP called with the same key so a retry after a crash cannot charge twice. Retry-relevant numbers: `services/payments/load/pay.js` retries every 5th payment with the same key; after the run there were 0 duplicate keys across 8 874 payments [measured] `services/payments/RESULTS.md`.
+**Where shown.** The full treatment is in [consistency and contention](consistency-and-contention.md): payments idempotency key (50 concurrent identical requests charge once), notifications dedup by `(outbox_id, channel)`, the PSP called with the same key so a retry after a crash cannot charge twice. Retry-relevant numbers: `services/payments/load/pay.js` retries every 5th payment with the same key; after the run there were 0 duplicate keys across 15 097 payments [measured] `services/payments/RESULTS.md`.
 
 ## Dead-letter queues
 
@@ -145,9 +145,9 @@ Replay: `services/notifications/src/replay-dlq.ts` republishes `<topic>.dlq` to 
 
 Sibling repo: kafka-pay-lab publishes a DLQ event through its outbox in the same transaction that marks a payment as dead-lettered (`apps/api/src/modules/payments/payment-processor.ts`), so the DLQ record cannot be lost either.
 
-## Connection limits: the listen backlog lesson
+## Connection limits: the accept queue lesson
 
-Capacity also hides in the operating system. [measured] `services/gateway/RESULTS.md`: the first flash-sale run had 289 connection resets at the 2 000-connection burst. `services/gateway/CAPACITY.md` explains the cause as the default listen backlog and states the fix `backlog: 4096` (also applied in `services/waiting-room/src/main.ts` and `services/payments/src/main.ts`); it also notes the OS `somaxconn` accept queue is a real capacity limit, and recommends keep-alive and a load balancer. See the discrepancy note below about how that failure is quantified.
+Capacity also hides in the operating system, and it can fool a load test. [measured] `services/gateway/RESULTS.md`: when all 2 000 users dial in the same millisecond, some connections fail with `dial: i/o timeout` in k6 (96 in the saved instantaneous run; 96 to 944 across earlier runs of that variant, which were not saved; earlier unsaved runs showed the same symptom as connection resets). On macOS `kern.ipc.somaxconn` is 128 and caps the accept queue whatever the application asks for, so `backlog: 4096` (set in `services/gateway/src/main.ts`, `services/waiting-room/src/main.ts` and `services/payments/src/main.ts`) alone did not fix it; an earlier version of this section said it did, which was wrong. It is a load-generator and OS artefact of an unrealistic arrival pattern, so the scenario now spreads arrivals over 3 s (`ARRIVAL_SPREAD_S`, default 3) and two saved runs had 0 failed requests; both variants are reported, and the held seats equalled the successful holds in all three (no oversell). `services/gateway/CAPACITY.md` keeps the production lesson: the OS accept queue is a real capacity limit, so raise it on the host with the application backlog, keep connections alive, and put a load balancer in front.
 
 ## Little's law: sizing pools and in-flight limits
 
@@ -155,10 +155,10 @@ in flight = rate x latency (`concurrency(rps, latencySeconds)` in `packages/capa
 
 | Case | Arithmetic | Source |
 |---|---|---|
-| Inventory holds at the flash-sale peak | 2 500 RPS x 0.02 s = 50 in flight, pool 20 per instance behind a pooler | `services/inventory/CAPACITY.md` [derived] |
+| Inventory holds at the flash-sale peak | 2 500 RPS x 0.018 s = 45 in flight, so 2 instances need a pool of about 25 each | `services/inventory/CAPACITY.md` [derived] |
 | Payments in flight | 400 x 0.1 s = 40 concurrent payments; pool 20 is enough because no connection is held during the PSP call | `services/payments/CAPACITY.md` [derived] |
-| Payments pool upper bound | If the pool was the limit at the measured 697 RPS, each payment held a connection for at most 20 / 697 = 28.7 ms | [derived] from `services/payments/RESULTS.md`; valid only if the pool was saturated, which the RESULTS file does not state |
-| Gateway in flight, healthy | 1 742 RPS x 0.0264 s (p50) = 46 | [derived], p50 used as the mean, approximate |
+| Payments pool upper bound | If the pool was the limit at the measured 904 RPS (PSP 0 ms), each payment held a connection for at most 20 / 904 = 22.1 ms | [derived] from `services/payments/RESULTS.md`; valid only if the pool was saturated, which the RESULTS file does not state |
+| Gateway in flight, healthy | 2 001 RPS x 0.0228 s (p50) = 46 | [derived], p50 used as the mean, approximate |
 
 Little's law is also the failure arithmetic: if latency grows 10x with the same arrival rate, in flight grows 10x, and a pool that was comfortable is exhausted.
 
@@ -172,8 +172,8 @@ Setup: 300 payments, 100 clients, a held seat per payment, PSP latency raised at
 
 | | Before the timeouts | After (PSP step timeout 2 s) |
 |---|---|---|
-| PSP 20 s: what the client got | **300 of 300 client timeouts (15 s), no answer** | **300 x 202 in-progress at p50 2.09 s** |
-| PSP 20 s: time until all payments final after the PSP recovered | 5.6 s | 3.2 s (sweeper, 10 in parallel) |
+| PSP 20 s: what the client got | **300 of 300 client timeouts (15 s), no answer** | **300 x 202 in-progress at p50 2.1 s** (2.09 s in the first run) |
+| PSP 20 s: time until all payments final after the PSP recovered | 5.6 s | 3.1 s in the latest run on NestJS 12 / Fastify 5 (3.2 s first run, 4.5 s earlier rerun; sweeper, 10 in parallel) |
 | PSP 3 s: what the client got | 300 x 200 CONFIRMED at p50 3.07 s | 300 x 202 in-progress at p50 2.07 s, finished later |
 | DB connections active during the slow phase | 1 | 0 to 1 |
 | Duplicate charges | 0 | 0 |
@@ -183,19 +183,19 @@ Setup: 300 payments, 100 clients, a held seat per payment, PSP latency raised at
 - Without a timeout the harm is not the pool, it is that **the caller gets no answer** while the server keeps working on abandoned requests. A bounded wait plus a definite "accepted, not final" answer (202, retry with the same Idempotency-Key) fixes that.
 - **The timeout is a trade-off, not free.** At PSP 3 s the old system answered every request correctly (just slowly), the new one with a 2 s step timeout turns every payment into the asynchronous path. The timeout must sit above the provider's p99 (for example 2-3 x p99, [folk]); a 2 s timeout is right only for a provider with a p99 well under 1 s.
 - A timeout means **unknown outcome, not failure**. Treating a confirm timeout as "seats lost" would refund a sold seat. Payments therefore leaves the saga in `CHARGED`, and inventory's confirm is idempotent so the retry after a lost response succeeds (tests: "confirm timeout does NOT refund", "retry after a lost response is safe").
-- The sweeper's throughput bounds recovery: sequential at 50 per sweep recovered 300 payments in 8.7 s, parallel by 10 in 3.2 s.
+- The sweeper's throughput bounds recovery: sequential at 50 per sweep recovered 300 payments in 8.7 s, parallel by 10 in 3.2 s, 4.5 s and 3.1 s in three runs (single runs on a laptop vary).
 
 ### Drill B: slow Postgres (inventory)
 
 - Inject: latency per query. There is no tool for this in the repo; a TCP latency proxy between the service and Postgres (toxiproxy or `tc netem`) would have to be added to `docker-compose.yml`. A cheaper approximation: hold row locks in a separate session so holds wait.
-- Expected arithmetic [derived]: pool 20 and 200 ms per hold gives a ceiling of 20 / 0.2 = 100 holds/s per instance, against 2 500 offered at the flash-sale peak and 2 300 measured healthy. The excess queues in the pool. Before the timeouts were added the pool waited indefinitely (node-postgres default `connectionTimeoutMillis` is 0, [folk], not verified here); the pools now fail after 2 s and statements after 5 s, which this drill would verify. Without them requests pile up in Node's memory, latency grows without bound, and clients time out while the server still processes the abandoned work.
+- Expected arithmetic [derived]: pool 20 and 200 ms per hold gives a ceiling of 20 / 0.2 = 100 holds/s per instance, against 2 500 offered at the flash-sale peak and 2 654 measured healthy. The excess queues in the pool. Before the timeouts were added the pool waited indefinitely (node-postgres default `connectionTimeoutMillis` is 0, [folk], not verified here); the pools now fail after 2 s and statements after 5 s, which this drill would verify. Without them requests pile up in Node's memory, latency grows without bound, and clients time out while the server still processes the abandoned work.
 - Observe: pool waiting count, event loop lag, memory, 5xx and client timeouts, and whether the gateway keeps admitting users.
 - Already added, to be verified by this drill: `connectionTimeoutMillis` 2 s and `statement_timeout` 5 s. Still a candidate: a server-side queue bound that returns 503 early.
 
 ### Drill C: slow Redis (gateway)
 
 - Inject: 150 ms of added latency (below the 200 ms timeout), then 250 ms (above it).
-- Expected arithmetic [derived]: at 150 ms no timeout triggers, so fail-open never engages and every request pays the extra time: in flight = 1 742 x (0.0264 + 0.15) = about 307 versus 46 healthy. At 250 ms every limiter call times out after 200 ms: availability fails open after waiting 200 ms and holds return 503 after 200 ms, so the bounded cost per request is 200 ms plus the normal path. The point of the drill: a slow Redis is worse than a dead one for this design, because a dead one fails immediately (offline queue disabled) and fail-open or closed applies instantly, while a slow one makes the policy wait. Candidate fixes: a lower timeout, a circuit breaker around the limiter that skips it while OPEN.
+- Expected arithmetic [derived]: at 150 ms no timeout triggers, so fail-open never engages and every request pays the extra time: in flight = 2 001 x (0.0228 + 0.15) = about 346 versus 46 healthy. At 250 ms every limiter call times out after 200 ms: availability fails open after waiting 200 ms and holds return 503 after 200 ms, so the bounded cost per request is 200 ms plus the normal path. The point of the drill: a slow Redis is worse than a dead one for this design, because a dead one fails immediately (offline queue disabled) and fail-open or closed applies instantly, while a slow one makes the policy wait. Candidate fixes: a lower timeout, a circuit breaker around the limiter that skips it while OPEN.
 
 ### Drill D: slow broker (payments relay)
 

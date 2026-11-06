@@ -11,7 +11,7 @@
 
 ## Details
 - Score is an `INCR` counter, not `Date.now()`: two joins in the same millisecond and clock skew between app nodes cannot reorder users.
-- Admission is `ZPOPMIN` then keys with TTL: an admitted user who does not show up loses the slot automatically.
+- Admission is `ZPOPMIN` then keys with TTL: an admitted user who does not show up loses the slot automatically. The pop and the key writes are two steps, not one transaction: a crash between them drops those users from the queue without an admission key (they re-join and lose their place). Making it atomic would need a Lua script.
 - Admission rate is a fixed budget, not adaptive. Adaptive (watch inventory p99) is better in production but harder to explain; noted as the next step.
 
 ## Consequences

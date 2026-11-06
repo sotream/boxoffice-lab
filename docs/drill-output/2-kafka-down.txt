@@ -1,0 +1,12 @@
+# drill 2: kafka down (node drills/kafka-down.mjs)
+# date: 2026-11-06T19:09Z
+# node: v26.13.0  nestjs: 12.4.0  fastify: 5.12.8
+# git: a1e7f99 (working tree)
+# machine: MacBook Air M1, all services, Postgres, Redis, Redpanda on the same laptop
+
+baseline: outbox=15097 topic_high_watermark=59148
+redpanda STOPPED; sending 300 payments
+payments while broker down: ok=300 failed=0 in 0.7s
+outbox unpublished: 300
+caught up 0.7s after broker start
+outbox rows=15397 (+300) topic_high_watermark=59448 (+300)

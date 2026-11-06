@@ -77,7 +77,7 @@ Pick the component where the requirements are hardest (the interviewer often ste
 
 "I chose A over B because [requirement]; the cost is [downside], which is acceptable because [number or constraint]; I would revisit if [trigger]."
 
-Example: "I chose a Postgres full-text search over Elasticsearch because search must be transactional with the event data and we are at 200k rows; the cost is weaker relevance tuning, acceptable because the cached path serves 15 236 RPS in our measurement; I would revisit if we need typo tolerance."
+Example: "I chose a Postgres full-text search over Elasticsearch because search must be transactional with the event data and we are at 200k rows; the cost is weaker relevance tuning, acceptable because the cached path serves 10 275 RPS in our measurement; I would revisit if we need typo tolerance."
 
 ## Phase 6: bottlenecks and failure (5 min)
 
@@ -119,13 +119,13 @@ Numbers are from each service's `RESULTS.md` (MacBook Air M1, everything on one 
 
 | Classic interview question | Service in this repo | ADR | Number to quote |
 |---|---|---|---|
-| Design a ticket booking system / prevent double booking | [inventory](../services/inventory) | [001-hold-strategy.md](../services/inventory/adr/001-hold-strategy.md) | 2 359 hold RPS, p99 37.7 ms (atomic UPDATE, low contention); the for-update variant reaches 1 924 RPS |
-| Design a flash-sale / virtual waiting room | [waiting-room](../services/waiting-room) | [001-redis-sorted-set-queue.md](../services/waiting-room/adr/001-redis-sorted-set-queue.md) | 7 656 RPS per instance, p99 27.8 ms, ~100 B of Redis per queued user |
-| Design a rate limiter / API gateway | [gateway](../services/gateway) | [001-token-bucket-redis.md](../services/gateway/adr/001-token-bucket-redis.md) | The hop costs 2 244 -> 1 742 RPS (about 22%) and about 6 ms p50; 0 oversell in the 2 000-user flash sale |
-| Design a payment system (idempotency, no double charge) | [payments](../services/payments/) | [001-saga-over-2pc.md](../services/payments/adr/001-saga-over-2pc.md) (also holds ADR 002, transactional outbox) | 528 RPS at 100 ms PSP latency, 697 RPS at 0 ms; 8 874 payments = 8 874 outbox rows = Kafka high watermark 8 874, 0 duplicate idempotency keys |
+| Design a ticket booking system / prevent double booking | [inventory](../services/inventory) | [001-hold-strategy.md](../services/inventory/adr/001-hold-strategy.md) | 2 654 hold RPS, p99 31.7 ms (atomic UPDATE, low contention); the for-update variant reaches 2 182 RPS |
+| Design a flash-sale / virtual waiting room | [waiting-room](../services/waiting-room) | [001-redis-sorted-set-queue.md](../services/waiting-room/adr/001-redis-sorted-set-queue.md) | 10 134 RPS per instance, p99 22.3 ms, ~100 B of Redis per queued user |
+| Design a rate limiter / API gateway | [gateway](../services/gateway) | [001-token-bucket-redis.md](../services/gateway/adr/001-token-bucket-redis.md) | The hop costs 2 485 -> 2 001 RPS (about 19%) and about 4 ms p50; 0 oversell in the 2 000-user flash sale |
+| Design a payment system (idempotency, no double charge) | [payments](../services/payments/) | [001-saga-over-2pc.md](../services/payments/adr/001-saga-over-2pc.md) (the file also holds ADR 002 outbox, 003 idempotency key, 004 timeouts and sweeper) | 561 RPS at 100 ms PSP latency, 904 RPS at 0 ms; 15 097 payments = 15 097 outbox rows = 15 097 published, 0 duplicate idempotency keys |
 | Design a notification service | [notifications](../services/notifications) | [001-kafka-for-notifications.md](../services/notifications/adr/001-kafka-for-notifications.md) | 447 deliveries/s with 1 partition, 1 393/s with 3 (x3.1); 38 000 of 38 000 delivered, 0 duplicates, 10 dead letters = 10 poison messages |
-| Design search (event, product, catalog) | [catalog](../services/catalog) | [001-postgres-fts-before-elasticsearch.md](../services/catalog/adr/001-postgres-fts-before-elasticsearch.md) | Ranked FTS 684 RPS; with Redis cache 15 236 RPS, p99 8.1 ms (22x); GIN is 87x faster than ILIKE on rare terms |
+| Design search (event, product, catalog) | [catalog](../services/catalog) | [001-postgres-fts-before-elasticsearch.md](../services/catalog/adr/001-postgres-fts-before-elasticsearch.md) | Ranked FTS 536 RPS; with Redis cache 10 275 RPS, p99 9.0 ms (19x); GIN is about 390x faster than ILIKE on rare terms |
 | Design a message queue consumer / retry and DLQ | [notifications](../services/notifications) | same ADR | 38 180 provider calls = 38 000 + 90 flaky events x 2 retries |
-| Saga vs two-phase commit | [payments](../services/payments/) | [001-saga-over-2pc.md](../services/payments/adr/001-saga-over-2pc.md) | Database is the limit: 3 commits per payment, Postgres ~243% CPU at 0 ms PSP |
-| Cache design (TTL, stampede, sizing) | [catalog](../services/catalog) | [001-postgres-fts-before-elasticsearch.md](../services/catalog/adr/001-postgres-fts-before-elasticsearch.md) | Cache beats the better index for hot queries: 15 236 vs 4 387 RPS (FTS by date) |
+| Saga vs two-phase commit | [payments](../services/payments/) | [001-saga-over-2pc.md](../services/payments/adr/001-saga-over-2pc.md) | Database is the limit: 3 commits per payment, Postgres ~243% CPU at 0 ms PSP (measured before the NestJS 12 / Fastify 5 upgrade, not repeated) |
+| Cache design (TTL, stampede, sizing) | [catalog](../services/catalog) | [001-postgres-fts-before-elasticsearch.md](../services/catalog/adr/001-postgres-fts-before-elasticsearch.md) | Cache beats the better index for hot queries: ranked + cache 10 275 RPS vs 3 199 RPS for FTS by date uncached |
 | Capacity estimation walk-through | every `services/*/CAPACITY.md` | n/a | Flash sale: 150 000 attempts / 60 s = 2 500 RPS, 2 instances at 0.6 headroom |

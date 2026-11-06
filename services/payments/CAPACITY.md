@@ -9,8 +9,8 @@
 - Rule that falls out of this: **never hold a DB connection while waiting for the PSP.** The code opens a transaction only for the state change, so a pool of 20 serves 40+ in-flight payments.
 
 ## Database
-- Measured: **528 payments/s per instance with a realistic 100 ms PSP** (compensation path, pool 20); **697/s with the PSP removed**, which shows the database, not the PSP wait, is the ceiling (3 transactions per payment, see RESULTS.md).
-- instances = ceil(400 / (528 x 0.6)) = **2** (with the 697 figure it would be 1, but that figure excludes the PSP latency we always have). The second instance also covers availability.
+- Measured: **561 payments/s per instance with a realistic 100 ms PSP** (compensation path, pool 20); **904/s with the PSP removed**, which shows the database, not the PSP wait, is the ceiling (3 transactions per payment; the CPU breakdown in RESULTS.md was measured before the NestJS 12 / Fastify 5 upgrade and not repeated).
+- instances = ceil(400 / (561 x 0.6)) = **2** (with the 904 figure it would be 1, but that figure excludes the PSP latency we always have). The second instance also covers availability.
 - Write load = 400 x 3 commits = **~1 200 TPS**. One primary is enough; scaling beyond means batching state transitions (fewer commits per payment) before sharding.
 
 ## Storage

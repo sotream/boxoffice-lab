@@ -1,0 +1,9 @@
+# waiting-room: k6 run services/waiting-room/load/join.js (100 VUs, 20 s, ADMIT_PER_SECOND=500)
+# date: 2026-11-06T18:48Z
+# node: v26.13.0  nestjs: 12.4.0  fastify: 5.12.8
+# git: a1e7f99 (working tree)
+# machine: MacBook Air M1, k6 and services on the same machine
+
+{"rps":10134,"reqs":202791,"p50":8.9,"p95":16,"p99":22.3}
+queue length: 57497
+redis used_memory: used_memory_human:7.68M
