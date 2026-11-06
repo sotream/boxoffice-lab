@@ -139,6 +139,19 @@ describe("timeouts", () => {
   });
 });
 
+describe("sweeper reports what it could not advance", () => {
+  it("a saga that fails on every sweep is reported, not swallowed", async () => {
+    const svc = new PaymentsService(pool, new FakePsp(), async () => { throw new Error("inventory rejected the confirm request with 400"); });
+    await svc.pay(req("sweep-err")).catch(() => undefined); // charged, confirm threw: stays CHARGED
+    await pool.query("UPDATE payments.payments SET updated_at = now() - interval '10 seconds'");
+    const seen: Array<{ id: number; message: string }> = [];
+    svc.onSweepError = (id, err) => seen.push({ id, message: String((err as Error).message) });
+    expect(await svc.sweep(3)).toBe(0);
+    expect(seen).toEqual([{ id: 1, message: "inventory rejected the confirm request with 400" }]);
+    expect((await pool.query("SELECT status FROM payments.payments")).rows[0].status).toBe("CHARGED");
+  });
+});
+
 describe("outbox relay", () => {
   it("publishes each row once per successful drain and marks it", async () => {
     const svc = new PaymentsService(pool, new FakePsp(), async () => true);

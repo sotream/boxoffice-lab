@@ -1,8 +1,9 @@
 import { Body, Controller, Module, Post } from "@nestjs/common";
-import { outgoingHeaders, registerPoolMetrics } from "@boxoffice/platform";
+import { registerPoolMetrics } from "@boxoffice/platform";
 import { createPool } from "./db";
 import { PaymentsController } from "./payments.controller";
-import { PaymentsService, StepTimeout } from "./payments.service";
+import { PaymentsService } from "./payments.service";
+import { confirmSeatsOverHttp } from "./confirm-seats";
 import { FakePsp } from "./psp";
 
 const pool = createPool(Number(process.env.PG_POOL ?? 20));
@@ -25,19 +26,7 @@ class AdminController {
   controllers: [PaymentsController, AdminController],
   providers: [{
     provide: PaymentsService,
-    useFactory: () => new PaymentsService(pool, psp, async (eventId, seatIds, userId) => {
-      try {
-        const res = await fetch(`${inventoryUrl}/events/${eventId}/confirm`, {
-          method: "POST", headers: { "content-type": "application/json", ...outgoingHeaders() }, body: JSON.stringify({ seatIds, userId }),
-          signal: AbortSignal.timeout(Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000))
-        });
-        if (res.status >= 500) throw new StepTimeout(`inventory ${res.status}`); // unknown outcome, not "seats lost"
-        return res.ok;
-      } catch (e) {
-        if (e instanceof StepTimeout) throw e;
-        throw new StepTimeout("inventory unreachable or timed out");
-      }
-    }, Number(process.env.PSP_TIMEOUT_MS ?? 2000))
+    useFactory: () => new PaymentsService(pool, psp, confirmSeatsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000)), Number(process.env.PSP_TIMEOUT_MS ?? 2000))
   }]
 })
 export class AppModule {}
