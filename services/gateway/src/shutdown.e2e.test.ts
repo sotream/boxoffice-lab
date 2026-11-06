@@ -14,13 +14,16 @@ describe("gateway process", () => {
     const upstream = createServer((_req, res) => { upstreamHits++; setTimeout(() => res.writeHead(200, { "content-type": "application/json" }).end('{"free":1}'), 800); });
     await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
     const port = await freePort();
-    const svc = spawnService(pkg, { PORT: String(port), INVENTORY_URL: `http://127.0.0.1:${(upstream.address() as any).port}`, UPSTREAM_TIMEOUT_MS: "5000", IP_RATE: "1000", IP_BURST: "1000", SHUTDOWN_DEADLINE_MS: "8000" });
+    const opsPort = await freePort();
+    const svc = spawnService(pkg, { PORT: String(port), OPS_PORT: String(opsPort), INVENTORY_URL: `http://127.0.0.1:${(upstream.address() as any).port}`, UPSTREAM_TIMEOUT_MS: "5000", IP_RATE: "1000", IP_BURST: "1000", SHUTDOWN_DEADLINE_MS: "8000" });
     live.push(svc);
     const base = `http://127.0.0.1:${port}`;
+    const ops = `http://127.0.0.1:${opsPort}`;
     try {
-      await waitHealthy(base);
-      expect((await fetch(`${base}/readyz`)).status).toBe(200);
-      expect((await (await fetch(`${base}/metrics`)).text())).toContain("http_requests_in_flight");
+      await waitHealthy(ops);
+      expect((await fetch(`${ops}/readyz`)).status).toBe(200);
+      expect((await (await fetch(`${ops}/metrics`)).text())).toContain("http_requests_in_flight");
+      for (const p of ["/healthz", "/readyz", "/metrics"]) expect((await fetch(`${base}${p}`)).status, `public ${p}`).toBe(404);
 
       const inflight = fetch(`${base}/events/1/availability`, { headers: { connection: "close" } });
       await new Promise((r) => setTimeout(r, 200));
@@ -32,7 +35,8 @@ describe("gateway process", () => {
       const exit = await svc.exited;
       expect(exit.code).toBe(0);
       expect(svc.output()).toContain("shutdown complete");
-      await expect(fetch(`${base}/healthz`)).rejects.toBeTruthy(); // no longer accepting
+      await expect(fetch(`${base}/events/1/availability`)).rejects.toBeTruthy(); // no longer accepting
+      await expect(fetch(`${ops}/healthz`)).rejects.toBeTruthy(); // the ops server closed with the rest
     } finally { upstream.close(); }
   }, 30_000);
 
@@ -40,11 +44,12 @@ describe("gateway process", () => {
     const upstream = createServer(() => undefined); // never answers
     await new Promise<void>((r) => upstream.listen(0, "127.0.0.1", r));
     const port = await freePort();
-    const svc = spawnService(pkg, { PORT: String(port), INVENTORY_URL: `http://127.0.0.1:${(upstream.address() as any).port}`, UPSTREAM_TIMEOUT_MS: "20000", SHUTDOWN_DEADLINE_MS: "20000" });
+    const opsPort = await freePort();
+    const svc = spawnService(pkg, { PORT: String(port), OPS_PORT: String(opsPort), INVENTORY_URL: `http://127.0.0.1:${(upstream.address() as any).port}`, UPSTREAM_TIMEOUT_MS: "20000", SHUTDOWN_DEADLINE_MS: "20000" });
     live.push(svc);
     const base = `http://127.0.0.1:${port}`;
     try {
-      await waitHealthy(base);
+      await waitHealthy(`http://127.0.0.1:${opsPort}`);
       fetch(`${base}/events/1/availability`, { headers: { connection: "close" } }).catch(() => undefined);
       await new Promise((r) => setTimeout(r, 200));
       svc.child.kill("SIGTERM");

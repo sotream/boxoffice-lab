@@ -84,13 +84,40 @@ describe("GatewayService", () => {
 
   it("an admitted user cannot hold or confirm seats as somebody else", async () => {
     const g = make();
+    // The check now runs after the per-user limiter (burst 2), so each case gets its own user bucket.
+    let n = 0;
+    const post = async (route: string, userId: string, body: string) => (await g.handle("POST", `/events/1/${route}`, "", body, "ip", signAdmission(userId, 1, 60, secret))).status;
+    for (const route of ["holds", "confirm"]) {
+      expect(await post(route, `a${n++}`, '{"userId":"victim","seatIds":[1]}')).toBe(403);
+      expect(await post(route, `a${n++}`, '{"seatIds":[1]}')).toBe(403); // no userId at all
+      expect(await post(route, `a${n++}`, '{"userId":["u"]}')).toBe(403);
+      expect(await post(route, `a${n++}`, "not json")).toBe(400);
+    }
+  });
+
+  it("malformed and mismatching bodies spend the user's tokens: 400/403 while tokens last, then 429; the upstream is never called", async () => {
+    const g = make(); // user bucket: burst 2
+    const t = signAdmission("u", 1, 60, secret);
+    const codes = [];
+    for (const b of ["not json", '{"userId":"victim"}', "not json", '{"userId":"u"}']) codes.push((await g.handle("POST", "/events/1/holds", "", b, "ip", t)).status);
+    expect(codes).toEqual([400, 403, 429, 429]); // even a valid body is refused once the bucket is empty
+    expect(calls).toHaveLength(0);
+  });
+
+  it("limiter store down and a malformed body: fail closed 503, the body is not even looked at", async () => {
+    const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", secret }, broken, broken, upstream);
+    expect((await g.handle("POST", "/events/1/holds", "", "not json", "ip", signAdmission("u", 1, 60, secret))).status).toBe(503);
+  });
+
+  it("only POST is body-checked: a GET to holds or confirm with a valid token is forwarded as before, and still limited per user", async () => {
+    const g = make();
     const t = signAdmission("u", 1, 60, secret);
     for (const route of ["holds", "confirm"]) {
-      expect((await g.handle("POST", `/events/1/${route}`, "", '{"userId":"victim","seatIds":[1]}', "ip", t)).status).toBe(403);
-      expect((await g.handle("POST", `/events/1/${route}`, "", '{"seatIds":[1]}', "ip", t)).status).toBe(403); // no userId at all
-      expect((await g.handle("POST", `/events/1/${route}`, "", '{"userId":["u"]}', "ip", t)).status).toBe(403);
-      expect((await g.handle("POST", `/events/1/${route}`, "", "not json", "ip", t)).status).toBe(400);
+      expect((await g.handle("GET", `/events/1/${route}`, "?a=1", undefined, "ip", t)).status).toBe(201);
     }
+    expect(calls).toEqual(["http://inv/events/1/holds?a=1", "http://inv/events/1/confirm?a=1"]);
+    expect((await g.handle("GET", "/events/1/holds", "", undefined, "ip", t)).status).toBe(429); // burst 2 used up
   });
 
   it("limiter store down: public availability fails open, holds fail closed with a fast 503", async () => {

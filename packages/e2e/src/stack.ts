@@ -32,7 +32,7 @@ process.on("exit", () => { for (const s of live) { try { s.child.kill("SIGKILL")
  * Real built services run as child processes; nothing is mocked. A service can be killed with SIGKILL and started again on the same port.
  */
 export class Stack {
-  readonly ports = {} as Record<Name | "ops", number>;
+  readonly ports = {} as Record<Name | "ops" | "gatewayOps", number>;
   readonly urls = {} as Record<Name, string>;
   readonly procs = new Map<Name | string, RunningService>();
   /** Output of every incarnation of every process, oldest first (a killed process keeps its log). */
@@ -75,7 +75,7 @@ export class Stack {
     if (this.redisDb < 0) throw new Error("no empty Redis logical DB among 11..15");
     this.redisUrl = `redis://localhost:56379/${this.redisDb}`;
 
-    for (const k of ["inventory", "waiting-room", "gateway", "payments", "notifications", "ops"] as const) this.ports[k] = await freePort();
+    for (const k of ["inventory", "waiting-room", "gateway", "payments", "notifications", "ops", "gatewayOps"] as const) this.ports[k] = await freePort();
     for (const n of ["inventory", "waiting-room", "gateway", "payments"] as Name[]) this.urls[n] = `http://127.0.0.1:${this.ports[n]}`;
 
     this.bridge = await Bridge.start(this.runId, this.userPrefix, opts.duplicateRate ?? 0.2, opts.seed ?? 1);
@@ -85,7 +85,7 @@ export class Stack {
     this.envs.set("inventory", { PORT: String(this.ports.inventory), SEED_SEATS: String(opts.seats), ...db, ...dbg });
     this.envs.set("waiting-room", { PORT: String(this.ports["waiting-room"]), REDIS_URL: this.redisUrl, ADMISSION_SECRET: SECRET, ADMIT_PER_SECOND: String(opts.admitPerSecond ?? 300) });
     this.envs.set("gateway", {
-      PORT: String(this.ports.gateway), REDIS_URL: this.redisUrl, INVENTORY_URL: this.urls.inventory, QUEUE_URL: this.urls["waiting-room"],
+      PORT: String(this.ports.gateway), OPS_PORT: String(this.ports.gatewayOps), REDIS_URL: this.redisUrl, INVENTORY_URL: this.urls.inventory, QUEUE_URL: this.urls["waiting-room"],
       ADMISSION_SECRET: SECRET, IP_RATE: "100000", IP_BURST: "100000", USER_RATE: "1000", USER_BURST: "1000", UPSTREAM_TIMEOUT_MS: "8000", ...dbg, ...opts.gatewayEnv
     });
     this.envs.set("payments", {
@@ -110,7 +110,7 @@ export class Stack {
     const idx = this.logs.get(name)!.length - 1;
     const sync = setInterval(() => { this.logs.get(name)![idx] = svc.output(); }, 250);
     void svc.exited.then(() => { clearInterval(sync); this.logs.get(name)![idx] = svc.output(); live.delete(svc); });
-    const base = name === "notifications" ? `http://127.0.0.1:${this.ports.ops}` : this.urls[name];
+    const base = name === "notifications" ? `http://127.0.0.1:${this.ports.ops}` : name === "gateway" ? `http://127.0.0.1:${this.ports.gatewayOps}` : this.urls[name];
     try { await waitHealthy(base, "/healthz", 30_000); }
     catch (e) { throw new Error(`${name} did not become healthy: ${(e as Error).message}\n${svc.output().slice(-3000)}`); }
   }
@@ -118,12 +118,13 @@ export class Stack {
   /** An additional gateway (other limits, or a dead Redis) on its own port. Killed with the stack. */
   async startGateway(label: string, env: Record<string, string>): Promise<string> {
     const port = await freePort();
-    this.envs.set(label, { ...this.envs.get("gateway")!, PORT: String(port), ...env });
+    const opsPort = await freePort();
+    this.envs.set(label, { ...this.envs.get("gateway")!, PORT: String(port), OPS_PORT: String(opsPort), ...env });
     const svc = spawnService(join(ROOT, DIR.gateway), this.envs.get(label)!);
     live.add(svc);
     this.procs.set(label, svc);
     void svc.exited.then(() => live.delete(svc));
-    await waitHealthy(`http://127.0.0.1:${port}`, "/healthz", 30_000);
+    await waitHealthy(`http://127.0.0.1:${opsPort}`, "/healthz", 30_000);
     return `http://127.0.0.1:${port}`;
   }
 

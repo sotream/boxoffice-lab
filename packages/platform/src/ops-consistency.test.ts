@@ -42,7 +42,7 @@ describe("ops package is consistent with the code", () => {
     const p = parse(readFileSync(join(root, "ops/prometheus.yml"), "utf8"));
     expect(p.rule_files).toContain("/etc/prometheus/alerts.yml");
     const targets = p.scrape_configs.map((s: any) => `${s.job_name}=${s.static_configs[0].targets[0]}`);
-    expect(targets).toEqual(["gateway=host.docker.internal:3100", "inventory=host.docker.internal:3101", "waiting-room=host.docker.internal:3102", "payments=host.docker.internal:3103", "catalog=host.docker.internal:3104", "notifications=host.docker.internal:3105"]);
+    expect(targets).toEqual(["gateway=host.docker.internal:3106", "inventory=host.docker.internal:3101", "waiting-room=host.docker.internal:3102", "payments=host.docker.internal:3103", "catalog=host.docker.internal:3104", "notifications=host.docker.internal:3105"]);
   });
 
   it("the observability compose profile does not change the default services", () => {

@@ -40,22 +40,26 @@ export class GatewayService {
     const eventId = Number(m[1]);
     const route = m[2];
 
-    if (route.startsWith("queue/")) return this.forward("ip", this.ipLimiter, `ip:${ip}`, this.cfg.queueUrl, path, query, method, body, fwd, false);
+    if (route.startsWith("queue/")) return this.forward("queue", "ip", this.ipLimiter, `ip:${ip}`, path, query, method, body, fwd, false);
     // Public read: if the limiter store is down, serve anyway (fail open). Availability is cheap and cacheable.
-    if (route === "availability") return this.forward("ip", this.ipLimiter, `ip:${ip}`, this.cfg.inventoryUrl, path, query, method, body, fwd, true);
+    if (route === "availability") return this.forward("inventory", "ip", this.ipLimiter, `ip:${ip}`, path, query, method, body, fwd, true);
 
     const who = admission ? verifyAdmission(admission, eventId, this.cfg.secret) : null;
     if (!who) { admissionRejected.inc(); return { status: 403, body: '{"error":"admission required"}' }; }
-    // The token proves who was admitted; the body says who the seats are for. They must be the same person,
-    // otherwise an admitted user could hold or confirm seats as somebody else.
-    let bodyUser: unknown;
-    try { bodyUser = JSON.parse(body ?? "")?.userId; } catch { return { status: 400, body: '{"error":"invalid json body"}' }; }
-    if (bodyUser !== who.userId) { admissionRejected.inc(); return { status: 403, body: '{"error":"user does not match admission token"}' }; }
     // Holds spend scarce inventory: fail closed, with a fast 503, if we cannot enforce the limit.
-    return this.forward("user", this.userLimiter, `user:${who.userId}`, this.cfg.inventoryUrl, path, query, method, body, fwd, false);
+    // The token proves who was admitted; the body says who the seats are for. They must be the same person,
+    // otherwise an admitted user could hold or confirm seats as somebody else. The check runs only for POST and only
+    // after the per-user limiter allowed the request, so malformed bodies spend the user's tokens (429 wins over 400/403).
+    const gate = method === "POST" ? (): Reply | null => {
+      let bodyUser: unknown;
+      try { bodyUser = JSON.parse(body ?? "")?.userId; } catch { return { status: 400, body: '{"error":"invalid json body"}' }; }
+      if (bodyUser !== who.userId) { admissionRejected.inc(); return { status: 403, body: '{"error":"user does not match admission token"}' }; }
+      return null;
+    } : undefined;
+    return this.forward("inventory", "user", this.userLimiter, `user:${who.userId}`, path, query, method, body, fwd, false, gate);
   }
 
-  private async forward(limiterName: "ip" | "user", limiter: RateLimiter, key: string, base: string, path: string, query: string, method: string, body: string | undefined, forwardedFor: string, failOpen: boolean): Promise<Reply> {
+  private async forward(upstreamName: "queue" | "inventory", limiterName: "ip" | "user", limiter: RateLimiter, key: string, path: string, query: string, method: string, body: string | undefined, forwardedFor: string, failOpen: boolean, gate?: () => Reply | null): Promise<Reply> {
     let r: { allowed: boolean };
     let limiterDown = false;
     try { r = await limiter.take(key); }
@@ -67,7 +71,9 @@ export class GatewayService {
     }
     if (!r.allowed) { limiterDecisions.inc({ limiter: limiterName, decision: "limited" }); return { status: 429, body: '{"error":"rate limited"}', headers: { "retry-after": "1" } }; }
     if (!limiterDown) limiterDecisions.inc({ limiter: limiterName, decision: "allowed" });
-    const upstreamName = base === this.cfg.queueUrl ? "queue" : "inventory";
+    const rejected = gate?.();
+    if (rejected) return rejected;
+    const base = upstreamName === "queue" ? this.cfg.queueUrl : this.cfg.inventoryUrl;
     const t0 = process.hrtime.bigint();
     try {
       const res = await this.upstream(`${base}${path}${query}`, { method, body, headers: { "content-type": "application/json", "x-forwarded-for": forwardedFor, ...outgoingHeaders() } });
