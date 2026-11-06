@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # One pnpm workspace: the lockfile and all packages/*, services/* manifests are updated from the root.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Types follow the Node version CI and the measurements use, not the latest major.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  # Images in docker-compose.yml. The service images in .github/workflows/ci.yml are not covered by Dependabot: keep them in step by hand.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      # A database major is a deliberate move (and a re-measurement), not a bot PR.
+      - dependency-name: postgres
+        update-types: ['version-update:semver-major']
+      - dependency-name: redis
+        update-types: ['version-update:semver-major']
