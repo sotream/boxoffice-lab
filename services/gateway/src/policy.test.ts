@@ -76,7 +76,7 @@ describe("every (route x token x limiter) combination gives the documented statu
     it(`${route} | token ${t} | limiter ${l}`, async () => {
       const { svc, limits, calls } = build(l);
       const method = route === "holds" || route === "confirm" || route === "queue/join" ? "POST" : "GET";
-      const r = await svc.handle(method, `/events/${EVENT}/${route}`, "?x=1", method === "POST" ? "{}" : undefined, "9.9.9.9", token(t));
+      const r = await svc.handle(method, `/events/${EVENT}/${route}`, "?x=1", method === "POST" ? '{"userId":"alice"}' : undefined, "9.9.9.9", token(t));
       const want = expected(route, t, l);
       expect(r.status).toBe(want.status);
       expect(limits).toEqual(want.limiter ? [want.limiter] : []); // 403 never spends limiter capacity
@@ -98,12 +98,12 @@ describe("upstream failures", () => {
   for (const route of ROUTES) {
     it(`${route}: an unreachable or slow upstream becomes 504 with the limiter ok`, async () => {
       const { svc } = build("ok", async () => { throw new Error("ETIMEDOUT"); });
-      const r = await svc.handle("GET", `/events/${EVENT}/${route}`, "", undefined, "ip", token("valid"));
+      const r = await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"));
       expect(r.status).toBe(504);
     });
     it(`${route}: upstream error statuses and bodies are passed through unchanged`, async () => {
       const { svc } = build("ok", async () => ({ status: 409, body: '{"reason":"unavailable"}' }));
-      const r = await svc.handle("POST", `/events/${EVENT}/${route}`, "", "{}", "ip", token("valid"));
+      const r = await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"));
       expect(r).toMatchObject({ status: 409, body: '{"reason":"unavailable"}' });
     });
   }
@@ -116,8 +116,8 @@ describe("upstream failures", () => {
 describe("routing and fuzz", () => {
   it("per-user keys: two users behind one IP are limited separately; per-IP keys for public routes", async () => {
     const { svc, limits } = build("ok");
-    await svc.handle("POST", `/events/${EVENT}/holds`, "", "{}", "1.1.1.1", signAdmission("u1", EVENT, 60, SECRET));
-    await svc.handle("POST", `/events/${EVENT}/holds`, "", "{}", "1.1.1.1", signAdmission("u2", EVENT, 60, SECRET));
+    await svc.handle("POST", `/events/${EVENT}/holds`, "", '{"userId":"u1"}', "1.1.1.1", signAdmission("u1", EVENT, 60, SECRET));
+    await svc.handle("POST", `/events/${EVENT}/holds`, "", '{"userId":"u2"}', "1.1.1.1", signAdmission("u2", EVENT, 60, SECRET));
     await svc.handle("GET", `/events/${EVENT}/availability`, "", undefined, "1.1.1.1");
     expect(limits).toEqual(["user:user:u1", "user:user:u2", "ip:ip:1.1.1.1"]);
   });

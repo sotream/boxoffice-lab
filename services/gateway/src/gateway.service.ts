@@ -46,6 +46,11 @@ export class GatewayService {
 
     const who = admission ? verifyAdmission(admission, eventId, this.cfg.secret) : null;
     if (!who) { admissionRejected.inc(); return { status: 403, body: '{"error":"admission required"}' }; }
+    // The token proves who was admitted; the body says who the seats are for. They must be the same person,
+    // otherwise an admitted user could hold or confirm seats as somebody else.
+    let bodyUser: unknown;
+    try { bodyUser = JSON.parse(body ?? "")?.userId; } catch { return { status: 400, body: '{"error":"invalid json body"}' }; }
+    if (bodyUser !== who.userId) { admissionRejected.inc(); return { status: 403, body: '{"error":"user does not match admission token"}' }; }
     // Holds spend scarce inventory: fail closed, with a fast 503, if we cannot enforce the limit.
     return this.forward("user", this.userLimiter, `user:${who.userId}`, this.cfg.inventoryUrl, path, query, method, body, fwd, false);
   }
