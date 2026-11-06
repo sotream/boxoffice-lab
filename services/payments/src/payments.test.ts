@@ -69,6 +69,30 @@ describe("payments saga", () => {
   });
 });
 
+describe("compensation and compare-and-set", () => {
+  it("crash after refund: resume retries with the same key, one effective refund, one event", async () => {
+    const psp = new FakePsp();
+    const svc = new PaymentsService(pool, psp, async () => false);
+    svc.crashAt = "after-refund";
+    await expect(svc.pay(req("k7"))).rejects.toThrow("crash");
+    expect((await pool.query("SELECT status FROM payments.payments")).rows[0].status).toBe("CHARGED");
+    svc.crashAt = undefined;
+    expect((await svc.resume(1)).status).toBe("REFUNDED");
+    expect(psp.refundCalls).toBe(2); // the retry did call the provider...
+    expect(psp.refundsApplied).toBe(1); // ...but the key made it a no-op
+    expect(await outbox()).toEqual(["payment.refunded"]);
+  });
+
+  it("a lost compare-and-set reports the stored state and writes no event", async () => {
+    const svc = new PaymentsService(pool, new FakePsp(), async () => true);
+    await svc.pay(req("k8"));
+    const row = (await pool.query("SELECT * FROM payments.payments WHERE id=1")).rows[0];
+    const lost = await (svc as any).transition(1, "CHARGED", "REFUNDED", "payment.refunded", row);
+    expect(lost.status).toBe("CONFIRMED");
+    expect(await outbox()).toEqual(["payment.confirmed"]);
+  });
+});
+
 describe("timeouts", () => {
   it("slow PSP: caller gets in-progress quickly, sweeper finishes it, one charge", async () => {
     const psp = new FakePsp(300);

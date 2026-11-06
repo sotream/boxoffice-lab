@@ -7,6 +7,7 @@ export class StepTimeout extends Error {}
 export type ConfirmSeats = (eventId: number, seatIds: number[], userId: string) => Promise<boolean>;
 export interface PaymentRequest { idempotencyKey: string; eventId: number; userId: string; seatIds: number[]; amountCents: number }
 export type PaymentView = { id: number; status: string };
+interface PaymentRow { id: number; idempotency_key: string; event_id: number; user_id: string; seat_ids: number[]; amount_cents: number; status: string }
 export type Outcome = { kind: "done"; payment: PaymentView } | { kind: "in-progress"; payment: PaymentView };
 
 /**
@@ -18,7 +19,7 @@ export type Outcome = { kind: "done"; payment: PaymentView } | { kind: "in-progr
  */
 export class PaymentsService {
   /** Test hook: throw to simulate a crash at a named step. */
-  crashAt?: "after-charge" | "after-confirm";
+  crashAt?: "after-charge" | "after-confirm" | "after-refund";
 
   constructor(private readonly pool: Pool, private readonly psp: Psp, private readonly confirmSeats: ConfirmSeats, private readonly stepTimeoutMs = 2000) {}
 
@@ -74,7 +75,7 @@ export class PaymentsService {
   private isFinal(s: string) { return s === "CONFIRMED" || s === "REFUNDED" || s === "FAILED"; }
 
   private async run(id: number): Promise<PaymentView> {
-    let p = (await this.pool.query("SELECT * FROM payments.payments WHERE id=$1", [id])).rows[0];
+    let p: PaymentRow = (await this.pool.query("SELECT * FROM payments.payments WHERE id=$1", [id])).rows[0];
 
     if (p.status === "PENDING") {
       const c = await this.within(this.psp.charge(p.idempotency_key, p.amount_cents));
@@ -90,7 +91,8 @@ export class PaymentsService {
       if (ok) return this.transition(id, "CHARGED", "CONFIRMED", "payment.confirmed", p);
       // Compensation: hold expired or was lost, give the money back.
       const c = await this.within(this.psp.charge(p.idempotency_key, p.amount_cents)); // idempotent: returns the existing charge id
-      if (c.chargeId) await this.psp.refund(c.chargeId);
+      if (c.chargeId) await this.psp.refund(c.chargeId, `refund:${p.idempotency_key}`); // keyed: a crash before the state change retries the same refund
+      if (this.crashAt === "after-refund") throw new Error("crash after refund");
       return this.transition(id, "CHARGED", "REFUNDED", "payment.refunded", p);
     }
 
@@ -98,7 +100,7 @@ export class PaymentsService {
   }
 
   /** Compare-and-set state change plus outbox row in a single transaction. */
-  private async transition(id: number, from: string, to: string, event: string | null, p: any): Promise<PaymentView> {
+  private async transition(id: number, from: string, to: string, event: string | null, p: PaymentRow): Promise<PaymentView> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -110,6 +112,11 @@ export class PaymentsService {
         );
       }
       await client.query("COMMIT");
+      if (r.rowCount === 0) {
+        // Lost the compare-and-set: another runner moved the saga first. Report the stored state, not the one we wanted.
+        const cur = (await this.pool.query("SELECT status FROM payments.payments WHERE id=$1", [id])).rows[0];
+        return { id, status: cur.status };
+      }
     } catch (e) {
       await client.query("ROLLBACK").catch(() => undefined);
       throw e;
