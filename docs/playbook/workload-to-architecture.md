@@ -155,4 +155,4 @@ Still paper:
 - Fan-out at feed scale: [feed-fanout](worked-scenarios/feed-fanout.md).
 - Long-running pipeline jobs: [file-pipeline](worked-scenarios/file-pipeline.md).
 - Money-grade ledger: [ledger](worked-scenarios/ledger.md).
-- Not measured: rows per commit vs TPS, per-shard write capacity, a Redis-based hold, the slow-dependency drill.
+- Not measured: rows per commit vs TPS, per-shard write capacity, a Redis-based hold, slow Postgres/Redis/broker drills (the slow PSP drill is done).

@@ -79,8 +79,10 @@ export class InventoryService {
   /** Confirm a hold into a sale; only the holder, only while the hold is valid. */
   async confirm(eventId: number, seatIds: number[], userId: string): Promise<boolean> {
     const res = await this.pool.query(
+      // Idempotent: a retry after a lost response (timeout) must still succeed, so already-sold-to-this-user counts.
       `UPDATE seats SET status='sold', hold_until=NULL
-       WHERE event_id=$1 AND seat_id = ANY($2) AND status='held' AND held_by=$3 AND hold_until >= now()`,
+       WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3
+         AND ((status='held' AND hold_until >= now()) OR status='sold')`,
       [eventId, seatIds, userId]
     );
     return res.rowCount === seatIds.length;

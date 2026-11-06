@@ -115,5 +115,5 @@ Proven:
 Still paper or unmeasured:
 - Elasticsearch/OpenSearch and MongoDB: never run, no code.
 - Object storage: [file-pipeline](worked-scenarios/file-pipeline.md).
-- Not drilled: Postgres failover, a slow dependency, network partitions ([failure-drills](../failure-drills.md)).
+- Not drilled: Postgres failover, slow Postgres/Redis/broker, network partitions (a slow PSP is drilled) ([failure-drills](../failure-drills.md)).
 - Redis as seat hold, SQS/RabbitMQ as transport, CDC instead of a polling outbox: named as alternatives, not built or measured.

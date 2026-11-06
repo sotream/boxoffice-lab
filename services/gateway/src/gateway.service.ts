@@ -48,7 +48,11 @@ export class GatewayService {
       r = { allowed: true };
     }
     if (!r.allowed) return { status: 429, body: '{"error":"rate limited"}', headers: { "retry-after": "1" } };
-    const res = await this.upstream(`${base}${path}${query}`, { method, body, headers: { "content-type": "application/json", "x-forwarded-for": ip } });
-    return { status: res.status, body: res.body };
+    try {
+      const res = await this.upstream(`${base}${path}${query}`, { method, body, headers: { "content-type": "application/json", "x-forwarded-for": ip } });
+      return { status: res.status, body: res.body };
+    } catch {
+      return { status: 504, body: '{"error":"upstream timeout or unreachable"}' }; // bounded wait instead of a hanging connection
+    }
   }
 }

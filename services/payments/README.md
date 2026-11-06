@@ -16,4 +16,7 @@ Every transition is a compare-and-set `UPDATE ... WHERE status = <from>` plus an
 ## Outbox relay
 A loop reads unpublished outbox rows (`FOR UPDATE SKIP LOCKED`), sends them to Kafka (Redpanda) with `acks=-1`, then marks them published. Delivery is **at-least-once**; consumers deduplicate by `outboxId`.
 
+## Timeouts and the 202 answer
+Each outside step (PSP, inventory confirm) is bounded at 2 s. On timeout the API answers **202** `{status, inProgress: true}`; repeat the call with the same `Idempotency-Key` to read the final state. A timeout is an unknown outcome, never a reason to refund; a sweeper resumes stuck sagas (ADR 004, drill 4). `POST /admin/psp` (only with `PSP_ADMIN=1`) changes the fake PSP latency for drills.
+
 See [CAPACITY.md](CAPACITY.md), [adr/](adr/), [RESULTS.md](RESULTS.md).

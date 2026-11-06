@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createPool, migrate } from "./db";
 import { OutboxRelay } from "./outbox-relay";
-import { PaymentsService, PaymentRequest } from "./payments.service";
+import { PaymentsService, PaymentRequest, StepTimeout } from "./payments.service";
 import { FakePsp } from "./psp";
 
 const pool = createPool(30);
@@ -66,6 +66,35 @@ describe("payments saga", () => {
     svc.crashAt = undefined;
     await svc.resume(1); await svc.resume(1);
     expect(await outbox()).toEqual(["payment.confirmed"]);
+  });
+});
+
+describe("timeouts", () => {
+  it("slow PSP: caller gets in-progress quickly, sweeper finishes it, one charge", async () => {
+    const psp = new FakePsp(300);
+    const svc = new PaymentsService(pool, psp, async () => true, 50);
+    const r = await svc.pay(req("slow1"));
+    expect(r.kind).toBe("in-progress");
+    expect(r.payment.status).toBe("PENDING");
+    psp.latencyMs = 0;
+    await pool.query("UPDATE payments.payments SET updated_at = now() - interval '10 seconds'");
+    expect(await svc.sweep(3)).toBe(1);
+    expect((await pool.query("SELECT status FROM payments.payments")).rows[0].status).toBe("CONFIRMED");
+    expect(psp.charges.size).toBe(1);
+  });
+
+  it("confirm timeout does NOT refund: the outcome is unknown, the saga waits in CHARGED", async () => {
+    const psp = new FakePsp();
+    let calls = 0;
+    const svc = new PaymentsService(pool, psp, async () => { if (calls++ === 0) throw new StepTimeout("inventory slow"); return true; }, 50);
+    const r = await svc.pay(req("slow2"));
+    expect(r.kind).toBe("in-progress");
+    expect(r.payment.status).toBe("CHARGED");
+    expect(psp.refunds.size).toBe(0);
+    await pool.query("UPDATE payments.payments SET updated_at = now() - interval '10 seconds'");
+    await svc.sweep(3);
+    expect((await pool.query("SELECT status FROM payments.payments")).rows[0].status).toBe("CONFIRMED");
+    expect(psp.refunds.size).toBe(0);
   });
 });
 

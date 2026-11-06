@@ -77,7 +77,7 @@ Build first
 - Load test the two or three endpoints that matter, on production-like data size; copy the pattern of [services/catalog/load](../../services/catalog/load/run.sh) (same data, change one variable at a time, record the setup next to the number).
 - SLOs written down (availability and p99), with the error budget: 99.9% is 8.8 h per year, 99.99% is 52 minutes ([numbers-to-know.md](../numbers-to-know.md) section d).
 - A real job runner (still on Postgres) with retries, backoff, a dead-letter state, and the attempt counter incremented before the work starts; the notifications handler shows the shape with measured exact counts ([notifications RESULTS.md](../../services/notifications/RESULTS.md)).
-- Point-in-time recovery, a documented restore time, one failure drill per dependency (the three in [failure-drills.md](../failure-drills.md), plus a slow dependency, which that file lists as not drilled).
+- Point-in-time recovery, a documented restore time, one failure drill per dependency (the five in [failure-drills.md](../failure-drills.md), plus a slow dependency, which that file lists as not drilled).
 - A data retention rule for the biggest tables (events, logs, audit): 146 GB per year at 400 000 events/day of 1 KB [derived: `storage --records-per-day 400k --bytes 1000 --years 1 --replication 1`].
 
 Postpone

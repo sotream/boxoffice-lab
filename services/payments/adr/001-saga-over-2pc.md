@@ -15,3 +15,18 @@ Dual write (UPDATE then `producer.send`) loses events if the process dies in bet
 # ADR 003: idempotency key is a unique column
 
 `INSERT ... ON CONFLICT DO NOTHING` on `idempotency_key` makes the database the arbiter: of 50 concurrent identical requests exactly one inserts and runs the saga, the others read the stored state (`inProgress: true` while running). The PSP is also called with the same key, so a retry after a crash cannot charge twice. Redis `SETNX` as a lock was rejected: it adds a second system whose failure semantics must match the database's.
+
+# ADR 004: bounded steps, "unknown" is not "failed", sweeper (added after drill 4)
+
+**Problem:** with no timeouts, a slow provider left clients hanging with no answer (300 of 300 timed out in the drill) while the service silently finished the work.
+
+**Decision:**
+- Each outside step (PSP charge, inventory confirm) has a 2 s timeout (`PSP_TIMEOUT_MS`, `CONFIRM_TIMEOUT_MS`). On timeout the caller gets **202 in-progress** and the same Idempotency-Key reads the result later.
+- **A timeout is an unknown outcome, not a failure.** The saga stays in `PENDING` or `CHARGED` and is never compensated on a timeout; only an explicit "seats unavailable" (409) refunds. Otherwise a confirm that succeeded but answered late would refund a sold seat.
+- Therefore inventory's `confirm` is idempotent: already sold to the same user counts as success (test).
+- A **sweeper** (every second, payments older than 3 s in `PENDING`/`CHARGED`, 10 in parallel) resumes stuck sagas. It is safe on many instances: transitions are compare-and-set and the PSP is idempotent by key. It also recovers crashes.
+- The outbox relay gets its own 3-connection pool and a 5 s publish timeout, because it holds a transaction open while publishing.
+
+**Rejected:** failing the payment on timeout (double-charge risk when the PSP did process it); a long timeout that matches the slowest PSP (back to hanging clients); holding the client connection until final (bounded only by the client's patience).
+
+**Cost:** the timeout must be set from the provider's p99 (2-3 x); set too low, healthy-but-slow calls turn asynchronous (seen at PSP 3 s vs 2 s timeout). Clients must handle 202.

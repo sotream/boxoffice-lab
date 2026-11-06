@@ -11,13 +11,13 @@ Labels on every number or claim:
 
 Setup for all measured numbers: one MacBook Air M1, load generator on the same machine, so they are conservative per-instance numbers and not production claims. Related pages: [consistency and contention](consistency-and-contention.md), [scaling ladder](scaling-ladder.md), [workload to architecture](workload-to-architecture.md).
 
-One fact to keep in mind while reading: the only timeout configured anywhere in this repo's service code is the gateway's Redis `commandTimeout: 200` (`services/gateway/src/main.ts`). A search for `connectionTimeout`, `statement_timeout`, `AbortSignal`, `idleTimeout` and `headersTimeout` in `services/*/src` finds nothing else. The Postgres pools, the PSP call, the payments-to-inventory `fetch` and the gateway upstream `fetch` have no explicit timeout. That is why the slow-dependency section at the end exists.
+Status of timeouts: the first version of this playbook found that the only timeout in the service code was the gateway's Redis `commandTimeout: 200`. They were added afterwards, driven by drill 4 (slow PSP): Postgres pools (`connectionTimeoutMillis` 2 s, `statement_timeout` 5 s), gateway upstream calls 2 s (answered as 504), payments PSP and inventory-confirm steps 2 s (answered as 202 in-progress, finished by a sweeper), the outbox relay publish 5 s on its own pool, and the catalog cache degrades to the database when Redis fails. Still without a timeout: the provider call in notifications (`handler.ts`; the 30 s lease bounds recovery, not the call) and the waiting-room Redis client.
 
 ## Summary table
 
 | Pattern | Protects against | Parameter | In this repo |
 |---|---|---|---|
-| Timeout | A slow dependency holding your resources forever | p99 x k, nested inside the caller's deadline | Redis 200 ms only; rest [paper design] |
+| Timeout | A slow dependency holding your resources forever | p99 x k, nested inside the caller's deadline | Pools, gateway upstream, PSP and confirm steps, Redis 200 ms; PSP case [measured] in drill 4 |
 | Retry with backoff and jitter | Transient failures | attempts, base delay, budget | Notifications (full jitter, 4 attempts) |
 | Circuit breaker | A failing dependency being hammered, your threads waiting on it | failure threshold, reset timeout | [paper design] here; exists in kafka-pay-lab |
 | Backpressure | Producer faster than consumer | bounded queue, pull-based consumption | Kafka consumer batches, relay batch size |
@@ -99,7 +99,7 @@ Only retry what is safe to repeat (next sections) and only on retryable errors; 
 
 **Parameter and derivation.** A separate pool or concurrency cap per dependency, sized with Little's law: in flight = rate x latency (`concurrency()` in `packages/capacity`). Example from the repo: payments plans 400/s with a PSP of 100 ms, so 400 x 0.1 = 40 in flight [derived, `services/payments/CAPACITY.md`]; a PSP-only concurrency cap should therefore sit above 40 with headroom, for instance 60, and reject or queue beyond it, so a PSP slowdown cannot exhaust the process.
 
-**Which service would host it and what to measure.** `services/payments`: today the saga's DB transitions and the outbox relay share one pg pool of 20 (`app.module.ts` exports the `pool` that `main.ts` gives the relay), and the relay holds a connection while it publishes. A separate small pool for the relay, and a concurrency limiter around the PSP and inventory calls, are the bulkheads. Measure: pool wait time and pool in-use count per consumer, in-flight PSP calls.
+**Which service hosts it and what is still to measure.** `services/payments`: the outbox relay now has its own small pool (3 connections, `main.ts`), so a slow broker cannot take connections from the saga transitions (done, not yet drilled with a slow broker). Still paper: a concurrency limiter around the PSP and inventory calls. Measure: pool wait time and in-use count per consumer, in-flight PSP calls.
 
 ## Fail open vs fail closed
 
@@ -141,7 +141,7 @@ Sibling repo: kafka-pay-lab ADR 0008 fails open for the whole throttler and reco
 
 **Where shown.** `services/notifications/src/consumer.ts`: a `DeadLetter` or a `SyntaxError` is published to `<topic>.dlq` with the error in a header, then counts as handled so offsets move on. Measured [measured] `services/notifications/RESULTS.md`: 10 poison messages (invalid JSON) in a 21 010 event run produced exactly 10 dead letters. State is per channel, so a message whose email failed never re-sends the push that already succeeded (test "exhausted retries dead-letter, and a retry ... does not resend the channel that worked"). ADR: `services/notifications/adr/001-kafka-for-notifications.md` (ADR 003 there). Cost named in the ADR: no per-message ack or delay in Kafka, so retry, backoff and DLQ are application code (with SQS they would be configuration).
 
-Gaps: there is no DLQ replay tool and no alert on DLQ depth [paper design]; the ADR says operations replay after a fix. A `DeadLetter` event's payload is republished raw, so replay is a produce back to `payments`.
+Replay: `services/notifications/src/replay-dlq.ts` republishes `<topic>.dlq` to the topic after the cause is fixed; drill 5 [measured] (`docs/failure-drills.md`): 200 dead letters while email was down, all 400 deliveries completed after replay, the push channel that had already worked was not resent, 0 duplicate rows. Gap [paper design]: no alert on DLQ depth, and the DLQ is not trimmed.
 
 Sibling repo: kafka-pay-lab publishes a DLQ event through its outbox in the same transaction that marks a payment as dead-lettered (`apps/api/src/modules/payments/payment-processor.ts`), so the DLQ record cannot be lost either.
 
@@ -162,23 +162,35 @@ in flight = rate x latency (`concurrency(rps, latencySeconds)` in `packages/capa
 
 Little's law is also the failure arithmetic: if latency grows 10x with the same arrival rate, in flight grows 10x, and a pool that was comfortable is exhausted.
 
-## The slow dependency (not yet drilled)
+## The slow dependency
 
-`docs/failure-drills.md` states it plainly: a slow (not dead) dependency is the most common real failure and is not drilled. All three drills break a dependency completely. A dead dependency fails fast and the repo handles it; a slow one holds resources, and no code here bounds that (see the timeout note at the top). The drills below are proposals [paper design]; none has been run and no result exists.
+A slow (not dead) dependency is the most common real failure: a dead one fails fast, a slow one holds resources. Drill 4 ([failure-drills](../failure-drills.md), `drills/slow-psp.mjs`) runs it for the PSP; drills B-D below are still proposals [paper design] with derived expectations and no results.
 
-### Drill A: slow PSP (payments)
+### Drill A: slow PSP (payments), done: drill 4
 
-- Inject: `PSP_LATENCY_MS=2000` (and a second run with 5000) on payments; the knob exists in `services/payments/src/app.module.ts`. Load: `services/payments/load/pay.js`, 100 VUs.
-- Observe: requests per second, p99, in-flight requests, pool in-use and pool waiting count, error rate, memory.
-- Expected arithmetic [derived], using the planned 400 payments/s: in flight = 400 x 2 s = 800 and at 5 s = 2 000, versus 40 healthy. The pool should stay out of it because no connection is held during the PSP call (a claim in `services/payments/CAPACITY.md` that this drill would actually test). With k6's closed loop of 100 VUs the throughput is bounded by VUs / time per payment: the compensation path calls the PSP twice, so about 4 s per payment at 2 s latency and 100 / 4 = 25 RPS, against the measured 528 RPS at 100 ms [measured] `services/payments/RESULTS.md`. Expect clients to time out and retry with the same key, which exercises idempotency under pressure: watch that PSP charges still equal one per key.
-- Pass criteria to decide in advance: no duplicate charges, no payments stuck in `CHARGED` that `resume` cannot finish, bounded memory.
+Setup: 300 payments, 100 clients, a held seat per payment, PSP latency raised at runtime (`POST /admin/psp`, enabled by `PSP_ADMIN=1`). Client abort at 15 s.
+
+| | Before the timeouts | After (PSP step timeout 2 s) |
+|---|---|---|
+| PSP 20 s: what the client got | **300 of 300 client timeouts (15 s), no answer** | **300 x 202 in-progress at p50 2.09 s** |
+| PSP 20 s: time until all payments final after the PSP recovered | 5.6 s | 3.2 s (sweeper, 10 in parallel) |
+| PSP 3 s: what the client got | 300 x 200 CONFIRMED at p50 3.07 s | 300 x 202 in-progress at p50 2.07 s, finished later |
+| DB connections active during the slow phase | 1 | 0 to 1 |
+| Duplicate charges | 0 | 0 |
+
+[measured] `drills/slow-psp.mjs`, laptop. Readings:
+- The design claim in `services/payments/CAPACITY.md` is confirmed: no DB connection is held during the PSP call, so the pool never became the problem (1 active connection at 300 payments in flight).
+- Without a timeout the harm is not the pool, it is that **the caller gets no answer** while the server keeps working on abandoned requests. A bounded wait plus a definite "accepted, not final" answer (202, retry with the same Idempotency-Key) fixes that.
+- **The timeout is a trade-off, not free.** At PSP 3 s the old system answered every request correctly (just slowly), the new one with a 2 s step timeout turns every payment into the asynchronous path. The timeout must sit above the provider's p99 (for example 2-3 x p99, [folk]); a 2 s timeout is right only for a provider with a p99 well under 1 s.
+- A timeout means **unknown outcome, not failure**. Treating a confirm timeout as "seats lost" would refund a sold seat. Payments therefore leaves the saga in `CHARGED`, and inventory's confirm is idempotent so the retry after a lost response succeeds (tests: "confirm timeout does NOT refund", "retry after a lost response is safe").
+- The sweeper's throughput bounds recovery: sequential at 50 per sweep recovered 300 payments in 8.7 s, parallel by 10 in 3.2 s.
 
 ### Drill B: slow Postgres (inventory)
 
 - Inject: latency per query. There is no tool for this in the repo; a TCP latency proxy between the service and Postgres (toxiproxy or `tc netem`) would have to be added to `docker-compose.yml`. A cheaper approximation: hold row locks in a separate session so holds wait.
-- Expected arithmetic [derived]: pool 20 and 200 ms per hold gives a ceiling of 20 / 0.2 = 100 holds/s per instance, against 2 500 offered at the flash-sale peak and 2 300 measured healthy. The excess queues in the pool. Whether it queues forever depends on node-postgres's default `connectionTimeoutMillis`, which I believe is 0 (wait indefinitely) but have not verified here; confirm in the `pg` documentation before relying on it. Requests then pile up in Node's memory, latency grows without bound, and clients time out while the server still processes the abandoned work.
+- Expected arithmetic [derived]: pool 20 and 200 ms per hold gives a ceiling of 20 / 0.2 = 100 holds/s per instance, against 2 500 offered at the flash-sale peak and 2 300 measured healthy. The excess queues in the pool. Before the timeouts were added the pool waited indefinitely (node-postgres default `connectionTimeoutMillis` is 0, [folk], not verified here); the pools now fail after 2 s and statements after 5 s, which this drill would verify. Without them requests pile up in Node's memory, latency grows without bound, and clients time out while the server still processes the abandoned work.
 - Observe: pool waiting count, event loop lag, memory, 5xx and client timeouts, and whether the gateway keeps admitting users.
-- Fix candidates to evaluate afterwards: `connectionTimeoutMillis` on the pool, `statement_timeout`, a server-side queue bound that returns 503 early.
+- Already added, to be verified by this drill: `connectionTimeoutMillis` 2 s and `statement_timeout` 5 s. Still a candidate: a server-side queue bound that returns 503 early.
 
 ### Drill C: slow Redis (gateway)
 
@@ -188,14 +200,9 @@ Little's law is also the failure arithmetic: if latency grows 10x with the same 
 ### Drill D: slow broker (payments relay)
 
 - Inject: delay Redpanda responses or pause the container for a few seconds (drill 2 stops it fully).
-- Expected: `drainOnce` publishes inside an open transaction, so each relay holds one pool connection and its row locks for as long as `producer.send` takes. With one relay per instance and a pool of 20 that is 1 connection of 20 [derived from the code]; the payment path should be unaffected unless the relay's connection and locks interfere. Observe pool in-use, outbox backlog age and `drainOnce` duration.
+- Expected: `drainOnce` still publishes inside an open transaction, so the relay holds a connection and its row locks for as long as `producer.send` takes (bounded at 5 s by the publish timeout). Since the relay now has its own pool of 3 [derived from the code], the saga path should be unaffected. Observe the relay pool in-use, outbox backlog age and `drainOnce` duration.
 
 What every drill must record: the same four numbers (rate, in flight, pool in-use and waiting, p99), because the lab's value is that its numbers are measured. Add results to a new row in the drills table in `docs/failure-drills.md`.
-
-## Discrepancies noticed between repo documents
-
-- Listen backlog: `services/gateway/RESULTS.md` reports "289 connection resets at the 2 000-connection burst", while `services/gateway/CAPACITY.md` says "~3.5% of joins fail". The two are not necessarily the same unit (resets over connections versus joins over total attempts) and I could not reconcile them from the files; the 289 figure is the one in the measured results.
-- `docs/failure-drills.md` calls the 2 s hang "the client timeout"; it is the drill script's own `AbortSignal.timeout(2000)`, not a service setting.
 
 ## Where this is proven in the repo / what is still paper
 
@@ -203,13 +210,14 @@ Proven by code and measurement:
 - Fail-open / fail-closed and fail-fast Redis client, drill 1: [gateway service](../../services/gateway/src/gateway.service.ts), [gateway main](../../services/gateway/src/main.ts), [gateway ADR](../../services/gateway/adr/001-token-bucket-redis.md), [failure drills](../failure-drills.md), [drill script](../../drills/redis-down.mjs).
 - Admission control and rate limiting: [waiting-room CAPACITY](../../services/waiting-room/CAPACITY.md), [waiting-room RESULTS](../../services/waiting-room/RESULTS.md), [gateway RESULTS](../../services/gateway/RESULTS.md), [gateway CAPACITY](../../services/gateway/CAPACITY.md).
 - Retry with full jitter, DLQ, lease: [handler](../../services/notifications/src/handler.ts), [consumer](../../services/notifications/src/consumer.ts), [RESULTS](../../services/notifications/RESULTS.md).
+- Slow PSP with timeouts, 202 in-progress and a sweeper (drill 4), DLQ replay (drill 5): [payments service](../../services/payments/src/payments.service.ts), [replay](../../services/notifications/src/replay-dlq.ts), [drill scripts](../../drills/).
 - Outbox surviving a broker outage, drill 2: [outbox relay](../../services/payments/src/outbox-relay.ts), [payments RESULTS](../../services/payments/RESULTS.md).
 - Little's law helper: [packages/capacity](../../packages/capacity/src/index.ts).
 
 Still paper (no code or no measurement here):
 - Circuit breaker and bulkhead (only kafka-pay-lab has a breaker).
-- Explicit timeouts on pools, PSP, inventory confirm and gateway upstream.
+- Timeouts on the notifications provider call and the waiting-room Redis client.
 - Retry budget enforcement; outbound rate limiter toward the email provider.
-- DLQ replay tool and DLQ depth alerting; adaptive admission rate.
-- All four slow-dependency drills above; their expected numbers are derived, none measured.
+- DLQ depth alerting; adaptive admission rate.
+- Slow-dependency drills B-D above (slow Postgres, slow Redis, slow broker); their expected numbers are derived, none measured. Drill A (slow PSP) is done.
 - Not measured anywhere: Redis, Postgres and PSP latency percentiles in isolation, pool wait times.

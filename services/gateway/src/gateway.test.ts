@@ -73,6 +73,12 @@ describe("GatewayService", () => {
     expect(calls[0]).toBe("http://q/events/1/queue/join");
   });
 
+  it("a hanging or failing upstream becomes a 504, not a hung request", async () => {
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", secret },
+      new RateLimiter(redis, 1000, 1000), new RateLimiter(redis, 1000, 1000), async () => { throw new Error("timeout"); });
+    expect((await g.handle("GET", "/events/1/availability", "", undefined, "ip")).status).toBe(504);
+  });
+
   it("404 for unknown paths", async () => {
     expect((await make().handle("GET", "/admin", "", undefined, "ip")).status).toBe(404);
   });

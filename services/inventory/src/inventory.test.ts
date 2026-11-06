@@ -45,6 +45,8 @@ describe("lifecycle", () => {
     await svc.hold(EVENT, [8], "a");
     expect(await svc.confirm(EVENT, [8], "intruder")).toBe(false);
     expect(await svc.confirm(EVENT, [8], "a")).toBe(true);
+    expect(await svc.confirm(EVENT, [8], "a")).toBe(true); // retry after a lost response is safe
+    expect(await svc.confirm(EVENT, [8], "intruder")).toBe(false);
     await svc.hold(EVENT, [9], "a");
     await pool.query("UPDATE seats SET hold_until = now() - interval '1 second' WHERE event_id=$1 AND seat_id=9", [EVENT]);
     expect(await svc.confirm(EVENT, [9], "a")).toBe(false);

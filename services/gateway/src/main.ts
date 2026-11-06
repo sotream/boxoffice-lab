@@ -18,7 +18,7 @@ const svc = new GatewayService(
   new RateLimiter(redis, Number(process.env.IP_RATE ?? 50), Number(process.env.IP_BURST ?? 100)),
   new RateLimiter(redis, Number(process.env.USER_RATE ?? 5), Number(process.env.USER_BURST ?? 10)),
   async (url, init) => {
-    const res = await fetch(url, init);
+    const res = await fetch(url, { ...init, signal: AbortSignal.timeout(Number(process.env.UPSTREAM_TIMEOUT_MS ?? 2000)) });
     return { status: res.status, body: await res.text() };
   }
 );
