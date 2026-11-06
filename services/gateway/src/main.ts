@@ -1,5 +1,5 @@
-import Fastify from "fastify";
 import Redis from "ioredis";
+import { buildApp } from "./app";
 import { GatewayService } from "./gateway.service";
 import { RateLimiter } from "./rate-limiter";
 
@@ -22,11 +22,5 @@ const svc = new GatewayService(
   }
 );
 
-const app = Fastify({ logger: false });
-app.addContentTypeParser("application/json", { parseAs: "string" }, (_req, body, done) => done(null, body));
-app.all("/*", async (req, reply) => {
-  const [path, qs] = req.url.split("?");
-  const r = await svc.handle(req.method, path, qs ? `?${qs}` : "", req.body as string | undefined, req.ip, req.headers["x-admission"] as string | undefined);
-  reply.status(r.status).headers({ "content-type": "application/json", ...r.headers }).send(r.body);
-});
+const app = buildApp(svc, (process.env.TRUST_PROXY ?? "").split(",").map((x) => x.trim()).filter(Boolean));
 app.listen({ port: Number(process.env.PORT ?? 3100), host: "0.0.0.0", backlog: 4096 });
