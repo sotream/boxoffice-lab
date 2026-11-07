@@ -164,10 +164,18 @@ export async function runLoad(cfg: LoadConfig, runId: string): Promise<LoadResul
         for (let w = 0; w < 30 && holder.size === 0; w++) await sleep(100);
         const others = [...holder.entries()].filter(([, u]) => u !== userId);
         const [seat, victim] = others.length ? others[Math.floor(p.rnd() * others.length)] : [pickSeats(p.rnd, 1)[0], `${userPrefix}nobody`];
-        const r = await call("impostor-pay", `${cfg.gateway}/events/${EVENT}/pay`, {
+        // A network error or a 5xx is not an answer (the gateway may be down in a chaos run): ask again, the refusal must come from a live gateway.
+        let r = await call("impostor-pay", `${cfg.gateway}/events/${EVENT}/pay`, {
           method: "POST", headers: json(rec.payRid, { "idempotency-key": rec.payKey, "x-admission": token }),
           body: JSON.stringify({ eventId: EVENT, userId: victim, seatIds: [seat], amountCents: SEAT_PRICE_CENTS })
         });
+        while ((!r || r.status >= 500) && Date.now() - t0 < deadlineMs) {
+          await sleep(300);
+          r = await call("impostor-pay", `${cfg.gateway}/events/${EVENT}/pay`, {
+            method: "POST", headers: json(rec.payRid, { "idempotency-key": rec.payKey, "x-admission": token }),
+            body: JSON.stringify({ eventId: EVENT, userId: victim, seatIds: [seat], amountCents: SEAT_PRICE_CENTS })
+          });
+        }
         rec.impostor = { victim, status: r?.status ?? 0 };
         return;
       }
