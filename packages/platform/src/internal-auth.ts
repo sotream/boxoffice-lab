@@ -1,4 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { Readable } from "node:stream";
+import type { FastifyInstance } from "fastify";
 
 /**
  * Service-to-service request signing. The caller never sends the shared secret; it sends a timestamp and an HMAC-SHA256 over
@@ -35,4 +37,58 @@ export function verifyInternalRequest(header: unknown, secrets: string[], method
   let ok = false;
   for (const secret of secrets) if (timingSafeEqual(given, mac(secret, ts, method, path, body))) ok = true;
   return ok;
+}
+
+/** Probe and metrics paths stay open: they carry no business data and orchestrators call them without credentials. */
+const OPEN_PATHS = new Set(["/healthz", "/readyz", "/metrics"]);
+/** Larger than any legitimate request; an authenticated-looking caller cannot make a service buffer more than this before the signature is checked. */
+export const INTERNAL_AUTH_MAX_BODY = 64 * 1024;
+
+/**
+ * What the hooks enforce. `verify` gets the raw header, method, path without query and the exact body bytes; `maxBodyBytes` caps what
+ * is buffered before that. A service passes its own policy (see the internal-auth.ts of payments and inventory), so what is accepted stays in the
+ * service's code and under its mutation tests; `internalAuthPolicy` is the standard one.
+ */
+export interface InternalAuthPolicy {
+  verify(header: unknown, method: string, path: string, body: Buffer): boolean;
+  maxBodyBytes: number;
+}
+export const internalAuthPolicy = (secrets: string[]): InternalAuthPolicy => ({
+  verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, body),
+  maxBodyBytes: INTERNAL_AUTH_MAX_BODY
+});
+
+const reject401 = (reply: { code(n: number): { header(k: string, v: string): { send(b: unknown): unknown } } }) =>
+  reply.code(401).header("content-type", "application/json").send({ statusCode: 401, error: "Unauthorized", message: "signed internal request required" });
+
+/**
+ * Service-to-service authentication, shared by every service that has callers of its own (payments, inventory): every request
+ * except the probe paths must carry `x-internal-auth`, a timestamp and an HMAC over method, path and body. The policy's
+ * `verify` checks against the accepted keys: the current one and, during a rotation, the previous one. Each service has its own key.
+ *
+ * Two hooks, both before the body is parsed and long before any controller or database access, so an unauthenticated caller
+ * gets 401 even for a malformed body: `onRequest` rejects a missing, malformed or stale header without reading anything;
+ * `preParsing` reads the raw body (capped), verifies the signature over it and hands the same bytes on to the parser.
+ * Everything that is not a probe path is denied by default (a route added later is protected without anybody remembering to
+ * guard it). Register it AFTER the instrumentation hooks, so that the 401s are counted and carry a request id.
+ */
+export function installInternalAuth(app: FastifyInstance, policy: InternalAuthPolicy): void {
+  app.addHook("onRequest", async (req, reply) => {
+    if (OPEN_PATHS.has(req.url.split("?", 1)[0])) return;
+    if (!internalAuthFresh(req.headers[INTERNAL_AUTH_HEADER])) return reject401(reply);
+  });
+  app.addHook("preParsing", async (req, reply, payload) => {
+    const path = req.url.split("?", 1)[0];
+    if (OPEN_PATHS.has(path)) return payload;
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const c of payload) {
+      size += (c as Buffer).length;
+      if (size > policy.maxBodyBytes) return reply.code(413).header("content-type", "application/json").send({ statusCode: 413, error: "Payload Too Large", message: "body too large" });
+      chunks.push(c as Buffer);
+    }
+    const body = Buffer.concat(chunks);
+    if (!policy.verify(req.headers[INTERNAL_AUTH_HEADER], req.method, path, body)) return reject401(reply);
+    return Readable.from(body.length ? [body] : []);
+  });
 }
