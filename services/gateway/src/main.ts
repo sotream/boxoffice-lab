@@ -8,6 +8,8 @@ const log = initService("gateway");
 const cfg = loadConfigOrExit((e) => ({
   port: e.port("PORT", 3100),
   opsPort: e.port("OPS_PORT", 3106),
+  // Loopback by default: the ops port exposes limiter counters and raw dependency errors and must not be reachable from wherever the public port is. Containers set 0.0.0.0 and keep the port off the public network.
+  opsHost: e.str("OPS_HOST", "127.0.0.1"),
   redisUrl: e.url("REDIS_URL", "redis://localhost:56379", ["redis:", "rediss:"]),
   inventoryUrl: e.url("INVENTORY_URL", "http://localhost:3101"),
   queueUrl: e.url("QUEUE_URL", "http://localhost:3102"),
@@ -45,13 +47,13 @@ async function main() {
   // /healthz, /readyz and /metrics are internal: they are served on their own port, never on the public listener.
   // Started after the public listener so "ops port answers" implies "gateway is serving". Unlike the notifications consumer,
   // a port clash is fatal here: a gateway nobody can scrape or probe must not take traffic.
-  const ops = await startOpsServer(cfg.opsPort, readiness);
+  const ops = await startOpsServer(cfg.opsPort, readiness, cfg.opsHost);
 
   const shutdown = createShutdown({ ...cfg.shutdown, readiness });
   shutdown.add("http server (stop accepting, drain in-flight)", () => drainHttp(app.server, () => app.close()));
   shutdown.add("ops server", () => new Promise<void>((r) => { ops.close(() => r()); ops.closeAllConnections(); }));
   shutdown.add("redis", async () => { await redis.quit().catch(() => redis.disconnect()); });
   shutdown.install();
-  log.info("listening", { port: cfg.port, opsPort: cfg.opsPort });
+  log.info("listening", { port: cfg.port, opsPort: cfg.opsPort, opsHost: cfg.opsHost });
 }
 main().catch(fatal("startup"));

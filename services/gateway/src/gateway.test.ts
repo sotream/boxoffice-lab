@@ -110,14 +110,16 @@ describe("GatewayService", () => {
     expect((await g.handle("POST", "/events/1/holds", "", "not json", "ip", signAdmission("u", 1, 60, secret))).status).toBe(503);
   });
 
-  it("only POST is body-checked: a GET to holds or confirm with a valid token is forwarded as before, and still limited per user", async () => {
+  it("holds and confirms are POST-only: any other method with a valid token is a 405 and is never forwarded (it would skip the identity check)", async () => {
     const g = make();
     const t = signAdmission("u", 1, 60, secret);
-    for (const route of ["holds", "confirm"]) {
-      expect((await g.handle("GET", `/events/1/${route}`, "?a=1", undefined, "ip", t)).status).toBe(201);
+    for (const method of ["GET", "PUT", "PATCH", "DELETE"]) for (const route of ["holds", "confirm"]) {
+      const r = await g.handle(method, `/events/1/${route}`, "", '{"userId":"u"}', "ip", t);
+      expect(r.status, `${method} ${route}`).toBe(405);
+      expect(r.headers?.allow).toBe("POST");
     }
-    expect(calls).toEqual(["http://inv/events/1/holds?a=1", "http://inv/events/1/confirm?a=1"]);
-    expect((await g.handle("GET", "/events/1/holds", "", undefined, "ip", t)).status).toBe(429); // burst 2 used up
+    expect(calls).toEqual([]);
+    expect((await g.handle("GET", "/events/1/holds", "", undefined, "ip")).status).toBe(403); // without a token the answer is still 403, not 405
   });
 
   it("limiter store down: public availability fails open, holds fail closed with a fast 503", async () => {

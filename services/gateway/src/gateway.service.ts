@@ -46,16 +46,19 @@ export class GatewayService {
 
     const who = admission ? verifyAdmission(admission, eventId, this.cfg.secret) : null;
     if (!who) { admissionRejected.inc(); return { status: 403, body: '{"error":"admission required"}' }; }
+    // Holds and confirms are POST-only: the identity check below needs a body, and forwarding any other method would
+    // skip it (inventory has no other route on these paths today, but a future one would inherit the hole).
+    if (method !== "POST") return { status: 405, body: '{"error":"method not allowed"}', headers: { allow: "POST" } };
     // Holds spend scarce inventory: fail closed, with a fast 503, if we cannot enforce the limit.
     // The token proves who was admitted; the body says who the seats are for. They must be the same person,
-    // otherwise an admitted user could hold or confirm seats as somebody else. The check runs only for POST and only
-    // after the per-user limiter allowed the request, so malformed bodies spend the user's tokens (429 wins over 400/403).
-    const gate = method === "POST" ? (): Reply | null => {
+    // otherwise an admitted user could hold or confirm seats as somebody else. The check runs after the per-user
+    // limiter allowed the request, so malformed bodies spend the user's tokens (429 wins over 400/403).
+    const gate = (): Reply | null => {
       let bodyUser: unknown;
       try { bodyUser = JSON.parse(body ?? "")?.userId; } catch { return { status: 400, body: '{"error":"invalid json body"}' }; }
       if (bodyUser !== who.userId) { admissionRejected.inc(); return { status: 403, body: '{"error":"user does not match admission token"}' }; }
       return null;
-    } : undefined;
+    };
     return this.forward("inventory", "user", this.userLimiter, `user:${who.userId}`, path, query, method, body, fwd, false, gate);
   }
 
