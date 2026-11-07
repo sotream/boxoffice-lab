@@ -24,6 +24,8 @@ export class NetProxy {
   accepted = 0;
   bytesUp = 0;
   bytesDown = 0;
+  /** Connections that had carried data from the target and were then closed (by either end). In a blackhole nothing new becomes established, so a rise there means an old connection was dropped by its owner. */
+  closedEstablished = 0;
 
   private constructor(private readonly targetHost: string, private readonly targetPort: number) {}
 
@@ -86,13 +88,14 @@ export class NetProxy {
     const up = this.makePipe(() => upstream, (n) => { this.bytesUp += n; });
     const down = this.makePipe(() => client, (n) => { this.bytesDown += n; });
     this.pipes.add(up); this.pipes.add(down);
-    const closeBoth = () => { client.destroy(); upstream?.destroy(); this.sockets.delete(client); if (upstream) this.sockets.delete(upstream); this.pipes.delete(up); this.pipes.delete(down); };
+    let established = false, closed = false;
+    const closeBoth = () => { if (!closed) { closed = true; if (established) this.closedEstablished++; } client.destroy(); upstream?.destroy(); this.sockets.delete(client); if (upstream) this.sockets.delete(upstream); this.pipes.delete(up); this.pipes.delete(down); };
     client.on("error", closeBoth); client.on("close", closeBoth);
     // Connect to the target right away (also in blackhole: the data is what is held, which is how an established session behaves).
     upstream = net.connect(this.targetPort, this.targetHost);
     this.sockets.add(upstream);
     upstream.on("error", closeBoth); upstream.on("close", closeBoth);
     client.on("data", (c: Buffer) => up.write(c));
-    upstream.on("data", (c: Buffer) => down.write(c));
+    upstream.on("data", (c: Buffer) => { if (this.mode.kind !== "blackhole") established = true; down.write(c); });
   }
 }
