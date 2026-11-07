@@ -72,8 +72,8 @@
     "id": "inv-confirm-expiry",
     "package": "@boxoffice/inventory",
     "file": "services/inventory/src/inventory.service.ts",
-    "find": "AND ((status='held' AND hold_until >= now()) OR status='sold')",
-    "replace": "AND (status='held' OR status='sold')",
+    "find": "held_by=$3\n             AND ((status='held' AND hold_until >= now()) OR status='sold')",
+    "replace": "held_by=$3\n             AND (status='held' OR status='sold')",
     "expectFailingTests": [
       "only the holder can confirm, and not after expiry",
       "model-based"
@@ -84,8 +84,8 @@
     "id": "inv-confirm-owner",
     "package": "@boxoffice/inventory",
     "file": "services/inventory/src/inventory.service.ts",
-    "find": "WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3",
-    "replace": "WHERE event_id=$1 AND seat_id = ANY($2) AND $3::text IS NOT NULL",
+    "find": "WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3\n",
+    "replace": "WHERE event_id=$1 AND seat_id = ANY($2) AND $3::text IS NOT NULL\n",
     "expectFailingTests": [
       "only the holder can confirm",
       "model-based"
@@ -540,8 +540,8 @@
     "id": "pay-confirm-4xx-refund",
     "package": "@boxoffice/payments",
     "file": "services/payments/src/confirm-seats.ts",
-    "find": "if (res.status === 409) return false;",
-    "replace": "if (res.status >= 400) return false;",
+    "find": "if (res.status === 409) return false;\n    throw new Error(`inventory rejected the confirm request",
+    "replace": "if (res.status >= 400) return false;\n    throw new Error(`inventory rejected the confirm request",
     "expectFailingTests": [
       "is a contract bug"
     ],
