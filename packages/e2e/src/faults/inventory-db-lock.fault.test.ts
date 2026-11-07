@@ -15,14 +15,17 @@ describe("fault 9: only inventory's database access fails (the seats table is lo
     const load = runLoad({ seed: 4901, users: USERS, seats: SEATS, gateway: s.urls.gateway, concurrency: USERS, deadlineMs: 150_000, grantsLive }, s.runId);
     await s.waitUntil(async () => (await count(s, "payments.payments")) >= 15 && grantsLive.size >= 25, 60_000, 20);
 
-    const refundsBefore = await count(s, "payments.payments WHERE status IN ('REFUNDING','REFUNDED')"); // cheaters legitimately get refunds before the lock
     // A lock that makes every statement of inventory on `seats` wait. Payments, notifications and the readiness checks do not touch that table.
     const locker = new Client({ connectionString: w.infra.pgUrl }); locker.on("error", () => undefined);
     await locker.connect();
     await locker.query("BEGIN");
     await locker.query("LOCK TABLE seats IN ACCESS EXCLUSIVE MODE");
     const lockedAt = Date.now();
-    await new Promise((r) => setTimeout(r, LOCK_MS));
+    // Baseline once the lock is held and sagas that had already read inventory's answer have settled: cheaters legitimately get
+    // refunds up to that point, and LOCK TABLE itself waits for in-flight inventory transactions, so a baseline taken before it races.
+    await new Promise((r) => setTimeout(r, 1_000));
+    const refundsBefore = await count(s, "payments.payments WHERE status IN ('REFUNDING','REFUNDED')");
+    await new Promise((r) => setTimeout(r, LOCK_MS - 1_000));
     // the dependent service is reported as ready (its own SELECT 1 works) but its work fails; nothing was refunded for it
     const invReady = (await fetch(`${s.urls.inventory}/readyz`)).status;
     const refundsDuring = await count(s, "payments.payments WHERE status IN ('REFUNDING','REFUNDED')");
@@ -38,8 +41,8 @@ describe("fault 9: only inventory's database access fails (the seats table is lo
     console.log("inventory db lock:", quiet, JSON.stringify({ lockMs, invReady, refundsDuring, chargedDuring, errors, ...report.summary }));
 
     expect(alive.filter(([, up]) => !up)).toEqual([]);
-    expect(refundsDuring, "refund caused by the outage").toBe(refundsBefore);
     expect(wronglyRefunded, "refund caused by the outage").toEqual([]);
+    expect(refundsDuring, "refund caused by the outage").toBe(refundsBefore);
     expect(errors.length, "clients must have felt the locked table").toBeGreaterThan(0);
     expect(chargedDuring, "sagas caught in CHARGED by the failing inventory").toBeGreaterThan(0);
     expect(invReady).toBe(200);
