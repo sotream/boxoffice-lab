@@ -13,6 +13,10 @@
 #   DATABASE_URL     used with psql for the payments cleanup if psql exists (default postgres://lab:lab@localhost:55432/lab)
 #   BENCH_MAX_LOAD   1-minute load average above which a run waits (default 4, up to BENCH_LOAD_WAIT=60 s), then proceeds
 #   VUS, DURATION    passed through to k6 unchanged (the scripts' own defaults apply when unset)
+#   BENCH_CPU        1 = sample per-process CPU during each k6 run (default off): node, k6, postgres, redis-server and
+#                    the VM/container layer (macOS com.apple.Virtualization.VirtualMachine, Linux dockerd, containerd-shim),
+#                    from `ps -Ao pcpu,comm`. Raw samples go to cpu-<label>.log, a peak/mean table to the output and table.md.
+#   BENCH_CPU_INTERVAL  seconds between CPU samples (default 5)
 # Nothing in the k6 scripts is changed; services are started from dist/ and are always killed on exit.
 set -euo pipefail
 
@@ -29,8 +33,11 @@ WORK=$(mktemp -d)
 REDIS_DB=${BENCH_REDIS_DB:-12}
 DATABASE_URL=${DATABASE_URL:-postgres://lab:lab@localhost:55432/lab}
 PIDS=()
+CPU_PID=
 cleanup() {
   local p
+  [ -n "$CPU_PID" ] && kill "$CPU_PID" 2>/dev/null || true
+  [ -n "$CPU_PID" ] && wait "$CPU_PID" 2>/dev/null || true
   for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done
   for p in ${PIDS[@]+"${PIDS[@]}"}; do wait "$p" 2>/dev/null || true; done
   rm -rf "$WORK"
@@ -85,10 +92,63 @@ truncate_payments() {
   docker exec "$c" psql -q -U lab -d lab -c "$sql" >/dev/null
 }
 
+# cpu_start <outfile-prefix>: with BENCH_CPU=1, samples %CPU (per core: 190 = ~1.9 cores) of the named processes every
+# BENCH_CPU_INTERVAL s into $OUT/cpu-<label>.log as "run sample name sum" (sum over same-named processes); sets CPU_PID.
+CPU_NAMES="node k6 postgres redis-server com.apple.Virtualization.VirtualMachine dockerd containerd-shim"
+cpu_start() {
+  [ "${BENCH_CPU:-0}" = 1 ] || return 0
+  local base=${1##*/} run log
+  run=${base##*.run}; log="$OUT/cpu-${base%.run*}.log"
+  [ "$run" = 1 ] && : >"$log"
+  (
+    trap 'kill $(jobs -p) 2>/dev/null; exit 0' TERM
+    n=0
+    while :; do
+      ps -Ao pcpu,comm 2>/dev/null | awk -v names="$CPU_NAMES" -v run="$run" -v n="$n" '
+        BEGIN { split(names, a, " "); for (i in a) want[a[i]] = 1 }
+        NR > 1 { c = $1; sub(/^ *[0-9.,]+ +/, ""); sub(/.*\//, ""); if ($0 in want) sum[$0] += c }
+        END { for (k in sum) print run, n, k, sum[k] }' >>"$log" || true
+      n=$((n + 1))
+      sleep "${BENCH_CPU_INTERVAL:-5}" &
+      wait $! || true
+    done
+  ) &
+  CPU_PID=$!
+}
+cpu_stop() {
+  [ -n "$CPU_PID" ] || return 0
+  kill "$CPU_PID" 2>/dev/null || true
+  wait "$CPU_PID" 2>/dev/null || true
+  CPU_PID=
+}
+# cpu_emit <label>: peak and mean of the per-sample sums per process name (a sample without the process counts as 0).
+cpu_emit() {
+  [ "${BENCH_CPU:-0}" = 1 ] || return 0
+  local log="$OUT/cpu-$1.log"
+  [ -s "$log" ] || return 0
+  emit ""
+  emit "CPU of $1 (%CPU per core: 100 = 1 core; sampled every ${BENCH_CPU_INTERVAL:-5} s)"
+  emit ""
+  emit "| Process | Peak % | Mean % | Samples |
+|---|---|---|---|"
+  emit "$(awk '
+    { s = $1 SUBSEP $2; seen[s] = 1; v[$3, s] = $4; names[$3] = 1 }
+    END {
+      for (s in seen) total++
+      for (k in names) {
+        peak = 0; sum = 0
+        for (s in seen) { x = ((k, s) in v) ? v[k, s] : 0; sum += x; if (x > peak) peak = x }
+        printf "| %s | %.0f | %.0f | %d |\n", k, peak, sum / total, total
+      }
+    }' "$log" | sort)"
+}
+
 # k6_run <outfile-prefix> <script>: summary in <prefix>.json, k6 exit code in <prefix>.rc (99 = a threshold failed).
 k6_run() {
   local rc=0
+  cpu_start "$1"
   k6 run --quiet --summary-export="$1.json" "$2" >"$1.out" 2>&1 || rc=$?
+  cpu_stop
   echo "$rc" >"$1.rc"
   if [ ! -s "$1.json" ]; then echo "k6 produced no summary (exit $rc):" >&2; tail -n 20 "$1.out" >&2; exit 1; fi
 }
@@ -161,6 +221,7 @@ bench_inventory() {
         stop_service "$SVC_PID"
       done
       emit "$(row "$strategy, $([ "$range" = 20 ] && echo 'hot (20 seats)' || echo 'low contention (100 000 seats)')" "$prefix")"
+      cpu_emit "inventory-$strategy-$range"
     done
   done
 }
@@ -178,6 +239,7 @@ bench_waiting_room() {
     stop_service "$SVC_PID"
   done
   emit "$(row "join + 2 status polls" "$prefix")"
+  cpu_emit waiting-room
 }
 
 bench_payments() {
@@ -197,6 +259,7 @@ bench_payments() {
       stop_service "$SVC_PID"
     done
     emit "$(row "PSP latency $lat ms" "$prefix")"
+    cpu_emit "payments-psp$lat"
   done
 }
 
@@ -216,6 +279,7 @@ bench_catalog() {
       STRATEGY=$strategy CACHE=$cache RARE=$rare k6_run "$prefix.run$r" "$ROOT/services/catalog/load/search.js"
     done
     emit "$(row "$name" "$prefix")"
+    cpu_emit "catalog-$i"
   done
   stop_service "$SVC_PID"
 }
