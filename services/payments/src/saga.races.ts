@@ -54,10 +54,11 @@ export function registerRaceTests(pool: Pool): void {
     it("the state is REFUNDING while the refund call is in flight, and pay() with the same key reports in-progress", async () => {
       const psp = new FakePsp();
       const hold = gate();
-      const slowRefund: Psp = { charge: (k, a) => psp.charge(k, a), refund: async (c, k) => { await hold.p; return psp.refund(c, k); } };
+      const entered = gate(); // opens when the refund call is entered: the REFUNDING claim is committed by then
+      const slowRefund: Psp = { charge: (k, a) => psp.charge(k, a), refund: async (c, k) => { entered.open(); await hold.p; return psp.refund(c, k); } };
       const svc = new PaymentsService(pool, slowRefund, async () => false);
       const running = svc.pay(req("inflight"));
-      await new Promise((r) => setTimeout(r, 50));
+      await entered.p;
       expect(await statusOf()).toBe("REFUNDING");
       const again = await svc.pay(req("inflight"));
       expect(again.kind).toBe("in-progress");
