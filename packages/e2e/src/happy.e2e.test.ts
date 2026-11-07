@@ -3,7 +3,7 @@ import { checkInvariants, waitQuiescent } from "./invariants";
 import { runLoad } from "./load";
 import { signAdmission } from "@boxoffice/admission";
 import { signInternalRequest } from "@boxoffice/platform";
-import { INTERNAL_TOKEN, SECRET, Stack } from "./stack";
+import { INTERNAL_TOKEN, INVENTORY_INTERNAL_TOKEN, SECRET, Stack } from "./stack";
 
 const SEATS = 100;
 const USERS = 300;
@@ -120,5 +120,33 @@ describe("scenario 1b: the boundary of payments, after the sale", () => {
     expect(await owner.json()).toMatchObject({ status: "CONFIRMED", paymentId: victim.paymentId, inProgress: false });
 
     expect(await count()).toBe(before + 1);
+  });
+});
+
+describe("scenario 1c: the boundary of inventory", () => {
+  const seatRows = () => stack.q(`SELECT seat_id, status, held_by FROM seats WHERE event_id=1 ORDER BY seat_id`);
+  const body = JSON.stringify({ seatIds: [SEATS], userId: "mallory" });
+  const send = (method: string, path: string, headers: Record<string, string>, payload?: string) =>
+    fetch(`${stack.urls.inventory}${path}`, { method, headers: { "content-type": "application/json", ...headers }, body: payload });
+  const sig = (method: string, path: string, payload: string, key = INVENTORY_INTERNAL_TOKEN, now = Date.now()) => ({ "x-internal-auth": signInternalRequest(key, method, path, payload, now) });
+
+  it("inventory refuses a direct unsigned confirm, hold, verify and availability; a signature made with another key, for another body or too old; and nothing is written", async () => {
+    const before = await seatRows();
+    const confirm = "/events/1/confirm";
+    // unsigned: the calls that would sell or hold seats for anybody, and the read
+    expect((await send("POST", confirm, {}, body)).status).toBe(401);
+    expect((await send("POST", "/events/1/holds", {}, body)).status).toBe(401);
+    expect((await send("POST", "/events/1/holds/verify", {}, body)).status).toBe(401);
+    expect((await send("GET", "/events/1/availability", {})).status).toBe(401);
+    // signed, but not acceptable: payments' key (a separate key per callee), another body, the clock skew, the key itself instead of a signature
+    expect((await send("POST", confirm, sig("POST", confirm, body, INTERNAL_TOKEN), body)).status).toBe(401);
+    expect((await send("POST", confirm, sig("POST", confirm, body), body.replace("mallory", "someone"))).status).toBe(401);
+    expect((await send("POST", confirm, sig("POST", confirm, body, INVENTORY_INTERNAL_TOKEN, Date.now() - 120_000), body)).status).toBe(401);
+    expect((await send("POST", confirm, { "x-internal-auth": INVENTORY_INTERNAL_TOKEN }, body)).status).toBe(401);
+    expect((await send("POST", confirm, {}, "{not json")).status).toBe(401);
+    expect(await seatRows()).toEqual(before);
+    // the probes stay open, and a correctly signed read works (the boundary is the key, not the network)
+    expect((await send("GET", "/healthz", {})).status).toBe(200);
+    expect((await send("GET", "/events/1/availability", sig("GET", "/events/1/availability", ""))).status).toBe(200);
   });
 });

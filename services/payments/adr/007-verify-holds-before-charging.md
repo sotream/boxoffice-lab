@@ -12,7 +12,7 @@ Ask first, charge second. For a brand-new payment (the idempotency insert won), 
 - **5xx, timeout, unreachable**: unknown. Not "not held" (ADR 004: unknown is not failed). The payment stays `PENDING`, the caller gets 202 in progress, and the sweeper continues it **without** asking again; confirm remains the authority.
 - **any other 4xx**: a contract bug; the call fails loudly and the payment stays `PENDING` uncharged.
 
-`holds/verify` is an inventory route the gateway does not route (the gateway's path whitelist is exact), so clients cannot call it; inventory has no authentication of its own, as before.
+`holds/verify` is an inventory route the gateway does not route (the gateway's path whitelist is exact), so clients cannot call it. Inventory had no authentication of its own when this ADR was written; since [inventory ADR 002](../../inventory/adr/002-signed-internal-requests.md) every inventory route needs a signed request and payments signs this call with `INVENTORY_INTERNAL_TOKEN`.
 
 ## Why only on the first call
 A `PENDING` saga that is resumed (crash after the charge, timeout) may already have been charged at the PSP. Failing it on a later "not held" would leave money taken and the saga `FAILED`. The check therefore runs only in the call that created the row, when no PSP call can have happened yet, and never in `run()`.

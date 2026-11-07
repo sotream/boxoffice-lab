@@ -39,7 +39,7 @@ The drills stop and start the compose containers and truncate shared tables (`no
 docker compose up -d
 pnpm build
 node drills/redis-down.mjs      # needs inventory 3101, waiting-room 3102, gateway 3100 running
-node drills/kafka-down.mjs      # needs inventory 3101, payments 3103 running (the drills send PAYMENTS_INTERNAL_TOKEN, default dev-internal-token)
+node drills/kafka-down.mjs      # needs inventory 3101, payments 3103 running (the drills sign with PAYMENTS_INTERNAL_TOKEN and INVENTORY_INTERNAL_TOKEN, defaults dev-internal-token and dev-inventory-internal-token)
 node drills/consumer-kill.mjs   # starts and kills its own consumers
 node drills/slow-psp.mjs 20000  # needs inventory 3101 and payments 3103 started with PSP_ADMIN=1
 node drills/dlq-replay.mjs      # needs the notifications package built; runs its own consumer

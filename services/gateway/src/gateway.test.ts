@@ -1,6 +1,7 @@
 import Redis from "ioredis";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { signAdmission } from "@boxoffice/admission";
+import { verifyInternalRequest } from "@boxoffice/platform";
 import { GatewayService, Upstream } from "./gateway.service";
 import { RateLimiter } from "./rate-limiter";
 
@@ -37,7 +38,7 @@ describe("GatewayService", () => {
   const upstream: Upstream = async (url) => { calls.push(url); return { status: 201, body: "{}" }; };
   const secret = "s";
   const make = () => new GatewayService(
-    { inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" },
+    { inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" },
     new RateLimiter(redis, 1000, 1000),
     new RateLimiter(redis, 1, 2),
     upstream
@@ -73,7 +74,7 @@ describe("GatewayService", () => {
   });
 
   it("a hanging or failing upstream becomes a 504, not a hung request", async () => {
-    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" },
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" },
       new RateLimiter(redis, 1000, 1000), new RateLimiter(redis, 1000, 1000), async () => { throw new Error("timeout"); });
     expect((await g.handle("GET", "/events/1/availability", "", undefined, "ip")).status).toBe(504);
   });
@@ -106,7 +107,7 @@ describe("GatewayService", () => {
 
   it("limiter store down and a malformed body: fail closed 503, the body is not even looked at", async () => {
     const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
-    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" }, broken, broken, upstream);
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" }, broken, broken, upstream);
     expect((await g.handle("POST", "/events/1/holds", "", "not json", "ip", signAdmission("u", 1, 60, secret))).status).toBe(503);
   });
 
@@ -172,7 +173,7 @@ describe("GatewayService", () => {
 
     it("limiter store down: pay fails closed with a fast 503, the body is not looked at", async () => {
       const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
-      const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" }, broken, broken, upstream);
+      const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" }, broken, broken, upstream);
       const r = await pay(g, "u", "not json");
       expect(r.status).toBe(503);
       expect(r.headers?.["retry-after"]).toBe("1");
@@ -192,7 +193,7 @@ describe("GatewayService", () => {
 
     it("a signed request and the key reach payments; the secret itself is never sent; a client cannot supply its own signature", async () => {
       const seen: Record<string, string>[] = [];
-      const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" },
+      const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" },
         new RateLimiter(redis, 1000, 1000), new RateLimiter(redis, 1000, 1000), async (_url, init) => { seen.push(init.headers); return { status: 200, body: "{}" }; });
       await pay(g, "u", '{"userId":"u","seatIds":[1]}', "key-9");
       expect(Object.values(seen[0])).not.toContain("internal");
@@ -203,10 +204,62 @@ describe("GatewayService", () => {
 
   it("limiter store down: public availability fails open, holds fail closed with a fast 503", async () => {
     const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
-    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" }, broken, broken, upstream);
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" }, broken, broken, upstream);
     expect((await g.handle("GET", "/events/1/availability", "", undefined, "ip")).status).toBe(201); // forwarded
     const t = signAdmission("u", 1, 60, secret);
     expect((await g.handle("POST", "/events/1/holds", "", '{"userId":"u"}', "ip", t)).status).toBe(503);
     expect((await g.handle("POST", "/events/1/queue/join", "", "{}", "ip")).status).toBe(503);
+  });
+});
+
+describe("GatewayService signs what it forwards to inventory", () => {
+  const secret = "s";
+  const INV_KEY = "inventory-internal";
+  type Seen = { url: string; method: string; body?: string; headers: Record<string, string> };
+  const build = (seen: Seen[]) => new GatewayService(
+    { inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "payments-internal", inventoryInternalToken: INV_KEY },
+    new RateLimiter(redis, 1000, 1000), new RateLimiter(redis, 1000, 1000),
+    async (url, init) => { seen.push({ url, ...init }); return { status: 200, body: "{}" }; }
+  );
+  const valid = (r: Seen, key = INV_KEY) => verifyInternalRequest(r.headers["x-internal-auth"], [key], r.method, new URL(r.url).pathname, r.body ?? "");
+
+  it("holds, confirm and availability carry a valid signature over the method, the path without the query and the exact body", async () => {
+    const seen: Seen[] = [];
+    const g = build(seen);
+    const t = signAdmission("u", 1, 60, secret);
+    const hold = '{"userId":"u","seatIds":[1, 2]}'; // spacing is kept: the signature is over the bytes that are sent
+    await g.handle("POST", "/events/1/holds", "?strategy=for-update", hold, "ip", t);
+    await g.handle("POST", "/events/1/confirm", "", hold, "ip", t);
+    await g.handle("GET", "/events/1/availability", "?x=1", undefined, "ip");
+    expect(seen.map((r) => [r.method, r.url, r.body])).toEqual([
+      ["POST", "http://inv/events/1/holds?strategy=for-update", hold],
+      ["POST", "http://inv/events/1/confirm", hold],
+      ["GET", "http://inv/events/1/availability?x=1", undefined]
+    ]);
+    for (const r of seen) expect(valid(r), r.url).toBe(true);
+  });
+
+  it("the signature is made with inventory's key, not payments' key, and is bound to the request it was made for", async () => {
+    const seen: Seen[] = [];
+    await build(seen).handle("POST", "/events/1/confirm", "", '{"userId":"u"}', "ip", signAdmission("u", 1, 60, secret));
+    expect(valid(seen[0], "payments-internal")).toBe(false);
+    expect(verifyInternalRequest(seen[0].headers["x-internal-auth"], [INV_KEY], "POST", "/events/1/holds", '{"userId":"u"}')).toBe(false); // other path
+    expect(verifyInternalRequest(seen[0].headers["x-internal-auth"], [INV_KEY], "POST", "/events/1/confirm", '{"userId":"v"}')).toBe(false); // other body
+  });
+
+  it("no key is ever sent, queue requests do not carry inventory's signature, and payments gets a signature made with its own key", async () => {
+    const seen: Seen[] = [];
+    const g = build(seen);
+    const t = signAdmission("u", 1, 60, secret);
+    await g.handle("POST", "/events/1/holds", "", '{"userId":"u"}', "ip", t);
+    await g.handle("POST", "/events/1/queue/join", "", '{"userId":"u"}', "ip");
+    await g.handle("POST", "/events/1/pay", "", '{"userId":"u","seatIds":[1]}', "ip", t, undefined, "k1");
+    for (const r of seen) {
+      expect(JSON.stringify(r.headers)).not.toContain(INV_KEY);
+      expect(JSON.stringify(r.headers)).not.toContain("payments-internal");
+    }
+    expect(seen[1].headers["x-internal-auth"]).toBeUndefined();               // the waiting room is not authenticated by this scheme
+    expect(valid(seen[2])).toBe(false);                                       // not made with inventory's key
+    expect(verifyInternalRequest(seen[2].headers["x-internal-auth"], ["payments-internal"], "POST", "/payments", seen[2].body ?? "")).toBe(true);
   });
 });

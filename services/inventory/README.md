@@ -11,6 +11,8 @@ Interview question: **"How do you prevent double booking when thousands of users
 ## Endpoints
 Port 3101. Seat ids: 1 to 8 per request, otherwise 400.
 
+**Authentication.** Every request except `/healthz`, `/readyz` and `/metrics` must carry header `x-internal-auth: <unix ms>.<hex HMAC-SHA256>`, computed with `INVENTORY_INTERNAL_TOKEN` (the key is never sent) over `timestamp, METHOD, path without query, SHA-256 of the body` (an empty body hashes the empty string). A missing, malformed, stale (more than 30 s of clock skew), forged or replayed-with-another-body request is 401 before the body is parsed and before any handler or database access, whatever the route or body. The callers sign: the gateway (everything it forwards), payments (`confirm`, `holds/verify`), and the load scripts and drills that talk to inventory directly. The key is separate from `PAYMENTS_INTERNAL_TOKEN`; see [ADR 002](adr/002-signed-internal-requests.md).
+
 | Method and path | Body or query | Answer |
 |---|---|---|
 | `POST /events/:id/holds?strategy=atomic-update\|for-update` | `{seatIds, userId}` | 201 `{seatIds, holdUntil}`, 409 when any seat is taken (all-or-nothing) |
@@ -30,6 +32,8 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 | Variable | Default | Meaning |
 |---|---|---|
 | `PORT` | 3101 | HTTP port |
+| `INVENTORY_INTERNAL_TOKEN` | `dev-inventory-internal-token` | HMAC key of the request signature (`x-internal-auth`); the gateway and payments sign with the same value, it is never sent. With `NODE_ENV=production` it must be set and not the default, otherwise exit 78 |
+| `INVENTORY_INTERNAL_TOKEN_PREVIOUS` | unset | Optional previous key, accepted in addition to the current one during a rotation (deploy inventory with both, then the gateway and payments with the new one, then drop the previous). Refused in production when it is the development default |
 | `DATABASE_URL` | `postgres://lab:lab@localhost:55432/lab` | Postgres (read by `@boxoffice/platform`) |
 | `PG_POOL` | 20 | Work pool size |
 | `HOLD_SECONDS` | 600 | How long a hold lasts (positive integer). Short values are for the expiry scenario of the fault suite |

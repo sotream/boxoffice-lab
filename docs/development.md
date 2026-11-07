@@ -33,7 +33,8 @@ Connection defaults come from `@boxoffice/platform`: `DATABASE_URL` defaults to 
 pnpm build
 SEED_SEATS=20000 PORT=3101 pnpm --filter @boxoffice/inventory start
 curl -s localhost:3101/readyz
-curl -s localhost:3101/events/1/availability
+# inventory refuses unsigned requests (401): sign one with the helper of the drills, or go through the gateway (localhost:3100)
+node -e 'import("./drills/internal-sign.mjs").then(async ({ signInternal }) => console.log(await (await fetch("http://localhost:3101/events/1/availability", { headers: signInternal("GET", "/events/1/availability", "", "inventory") })).text()))'
 ```
 
 `start` is `node dist/main.js` in the package directory, so rebuild after a change (`pnpm --filter @boxoffice/inventory build`). Ports, endpoints and every variable of a service are in its README (Endpoints, Environment). A bad variable exits with code 78 and prints every problem. Seeding variables are destructive: `SEED_SEATS` deletes and re-creates event 1's seats, `SEED_EVENTS` truncates `catalog.events`.
@@ -54,7 +55,7 @@ The drills are plain Node scripts in `drills/` (results and context: [failure-dr
 docker compose up -d
 pnpm build
 node drills/redis-down.mjs      # needs inventory 3101, waiting-room 3102, gateway 3100 running
-node drills/kafka-down.mjs      # needs inventory 3101, payments 3103 running (the drills send PAYMENTS_INTERNAL_TOKEN, default dev-internal-token)
+node drills/kafka-down.mjs      # needs inventory 3101, payments 3103 running (the drills sign with PAYMENTS_INTERNAL_TOKEN and INVENTORY_INTERNAL_TOKEN, defaults dev-internal-token and dev-inventory-internal-token)
 node drills/consumer-kill.mjs   # starts and kills its own consumers (notifications built)
 node drills/slow-psp.mjs 20000  # needs inventory 3101 and payments 3103 started with PSP_ADMIN=1
 node drills/dlq-replay.mjs      # needs the notifications package built; runs its own consumer

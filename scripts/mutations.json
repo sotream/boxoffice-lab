@@ -675,8 +675,8 @@
     "id": "pay-token-skip",
     "package": "@boxoffice/payments",
     "file": "services/payments/src/internal-auth.ts",
-    "find": "if (!verifyInternalRequest(req.headers[INTERNAL_AUTH_HEADER], secrets, req.method, path, body)) return reject401(reply);",
-    "replace": "if (false) return reject401(reply);",
+    "find": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, body),",
+    "replace": "verify: () => true,",
     "expectFailingTests": [
       "a captured signature cannot be reused",
       "a signature made with another secret"
@@ -687,8 +687,8 @@
     "id": "pay-auth-body-ignored",
     "package": "@boxoffice/payments",
     "file": "services/payments/src/internal-auth.ts",
-    "find": "if (!verifyInternalRequest(req.headers[INTERNAL_AUTH_HEADER], secrets, req.method, path, body)) return reject401(reply);",
-    "replace": "if (!verifyInternalRequest(req.headers[INTERNAL_AUTH_HEADER], secrets, req.method, path, Buffer.alloc(0))) return reject401(reply);",
+    "find": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, body),",
+    "replace": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, Buffer.alloc(0)),",
     "expectFailingTests": [
       "right secret passes",
       "the signature covers the path"
@@ -699,8 +699,8 @@
     "id": "pay-auth-single-secret",
     "package": "@boxoffice/payments",
     "file": "services/payments/src/internal-auth.ts",
-    "find": "if (!verifyInternalRequest(req.headers[INTERNAL_AUTH_HEADER], secrets, req.method, path, body)) return reject401(reply);",
-    "replace": "if (!verifyInternalRequest(req.headers[INTERNAL_AUTH_HEADER], secrets.slice(0, 1), req.method, path, body)) return reject401(reply);",
+    "find": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, body),",
+    "replace": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets.slice(0, 1), method, path, body),",
     "expectFailingTests": [
       "during a rotation both the current and the previous secret"
     ],
@@ -710,8 +710,8 @@
     "id": "pay-auth-body-cap-off",
     "package": "@boxoffice/payments",
     "file": "services/payments/src/internal-auth.ts",
-    "find": "if (size > MAX_SIGNED_BODY)",
-    "replace": "if (false)",
+    "find": "maxBodyBytes: INTERNAL_AUTH_MAX_BODY",
+    "replace": "maxBodyBytes: Number.MAX_SAFE_INTEGER",
     "expectFailingTests": [
       "a body above the cap is refused"
     ],
@@ -794,5 +794,117 @@
       "an expired hold is not a hold"
     ],
     "description": "the ownership check treats an expired hold as a live one"
+  },
+  {
+    "id": "inv-auth-skip",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/internal-auth.ts",
+    "find": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, body),",
+    "replace": "verify: () => true,",
+    "expectFailingTests": [
+      "a captured signature cannot be reused",
+      "during a rotation both the current and the previous key"
+    ],
+    "description": "inventory no longer verifies the request signature: a well-formed but forged header is accepted (the confirm of any user, with any key)"
+  },
+  {
+    "id": "inv-auth-body-ignored",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/internal-auth.ts",
+    "find": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, body),",
+    "replace": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, Buffer.alloc(0)),",
+    "expectFailingTests": [
+      "signed requests work end to end"
+    ],
+    "description": "inventory verifies the signature against an empty body instead of the received one (breaks body binding: every signed request with a body is refused)"
+  },
+  {
+    "id": "inv-auth-single-secret",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/internal-auth.ts",
+    "find": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets, method, path, body),",
+    "replace": "verify: (header, method, path, body) => verifyInternalRequest(header, secrets.slice(0, 1), method, path, body),",
+    "expectFailingTests": [
+      "during a rotation both the current and the previous key"
+    ],
+    "description": "inventory accepts only the first of its configured keys, so a rotation locks the previous key (and its callers) out"
+  },
+  {
+    "id": "inv-auth-body-cap-off",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/internal-auth.ts",
+    "find": "maxBodyBytes: INTERNAL_AUTH_MAX_BODY",
+    "replace": "maxBodyBytes: Number.MAX_SAFE_INTEGER",
+    "expectFailingTests": [
+      "a body above the cap is refused"
+    ],
+    "description": "inventory buffers a body of any size before checking the signature"
+  },
+  {
+    "id": "gw-inv-not-signed",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "[INTERNAL_AUTH_HEADER]: signInternalRequest(this.cfg.inventoryInternalToken, method, sendPath, sendBody ?? \"\")",
+    "replace": "[INTERNAL_AUTH_HEADER]: \"\"",
+    "expectFailingTests": [
+      "holds, confirm and availability carry a valid signature",
+      "they carry inventory's own signature"
+    ],
+    "description": "gateway forwards holds, confirm and availability to inventory without a signature, so inventory would refuse every one of them"
+  },
+  {
+    "id": "gw-inv-wrong-key",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "signInternalRequest(this.cfg.inventoryInternalToken, method, sendPath, sendBody ?? \"\")",
+    "replace": "signInternalRequest(this.cfg.internalToken, method, sendPath, sendBody ?? \"\")",
+    "expectFailingTests": [
+      "the signature is made with inventory's key, not payments' key"
+    ],
+    "description": "gateway signs its inventory requests with the payments key: one key opens both services and inventory (which has its own) refuses the gateway"
+  },
+  {
+    "id": "gw-inv-sign-other-body",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "signInternalRequest(this.cfg.inventoryInternalToken, method, sendPath, sendBody ?? \"\")",
+    "replace": "signInternalRequest(this.cfg.inventoryInternalToken, method, sendPath, \"\")",
+    "expectFailingTests": [
+      "holds, confirm and availability carry a valid signature"
+    ],
+    "description": "gateway signs an empty body instead of the one it sends, so inventory would refuse every hold and confirm"
+  },
+  {
+    "id": "pay-confirm-not-signed",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/confirm-seats.ts",
+    "find": "const path = `/events/${eventId}/confirm`;\n    const body = JSON.stringify({ seatIds, userId });\n    try {\n      res = await fetch(`${inventoryUrl}${path}`, {\n        method: \"POST\", headers: { \"content-type\": \"application/json\", ...outgoingHeaders(), [INTERNAL_AUTH_HEADER]: signInternalRequest(internalToken, \"POST\", path, body) }",
+    "replace": "const path = `/events/${eventId}/confirm`;\n    const body = JSON.stringify({ seatIds, userId });\n    try {\n      res = await fetch(`${inventoryUrl}${path}`, {\n        method: \"POST\", headers: { \"content-type\": \"application/json\", ...outgoingHeaders() }",
+    "expectFailingTests": [
+      "carry a signature over the exact method, path and body"
+    ],
+    "description": "payments calls inventory confirm without a signature, so inventory refuses every confirm (a contract-bug error, the saga stays CHARGED)"
+  },
+  {
+    "id": "pay-verify-not-signed",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/confirm-seats.ts",
+    "find": "const path = `/events/${eventId}/holds/verify`;\n    const body = JSON.stringify({ seatIds, userId });\n    try {\n      res = await fetch(`${inventoryUrl}${path}`, {\n        method: \"POST\", headers: { \"content-type\": \"application/json\", ...outgoingHeaders(), [INTERNAL_AUTH_HEADER]: signInternalRequest(internalToken, \"POST\", path, body) }",
+    "replace": "const path = `/events/${eventId}/holds/verify`;\n    const body = JSON.stringify({ seatIds, userId });\n    try {\n      res = await fetch(`${inventoryUrl}${path}`, {\n        method: \"POST\", headers: { \"content-type\": \"application/json\", ...outgoingHeaders() }",
+    "expectFailingTests": [
+      "carry a signature over the exact method, path and body"
+    ],
+    "description": "payments calls inventory holds/verify without a signature, so the pre-charge check fails with a contract-bug error"
+  },
+  {
+    "id": "pay-confirm-inventory-key-mixup",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/confirm-seats.ts",
+    "find": "signInternalRequest(internalToken, \"POST\", path, body) }, body,\n        signal: AbortSignal.timeout(timeoutMs)\n      });\n    } catch {\n      throw new StepTimeout(\"inventory unreachable or timed out\");\n    }\n    if (res.status >= 500) throw new StepTimeout(`inventory ${res.status}`); // unknown",
+    "replace": "signInternalRequest(\"dev-internal-token\", \"POST\", path, body) }, body,\n        signal: AbortSignal.timeout(timeoutMs)\n      });\n    } catch {\n      throw new StepTimeout(\"inventory unreachable or timed out\");\n    }\n    if (res.status >= 500) throw new StepTimeout(`inventory ${res.status}`); // unknown",
+    "expectFailingTests": [
+      "carry a signature over the exact method, path and body"
+    ],
+    "description": "payments signs confirm with a hard-coded key instead of the configured inventory key"
   }
 ]

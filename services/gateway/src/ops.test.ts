@@ -10,7 +10,7 @@ import { RateLimiter } from "./rate-limiter";
 const secret = "s";
 const limiter = (allowed: boolean | "throw") => ({ take: async () => { if (allowed === "throw") throw new Error("redis down"); return { allowed, remaining: 0 }; } }) as unknown as RateLimiter;
 const make = (ip: RateLimiter, user: RateLimiter, calls: { url: string; headers: Record<string, string> }[] = [], fail?: Error) =>
-  new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" }, ip, user, async (url, init) => { calls.push({ url, headers: init.headers }); if (fail) throw fail; return { status: 200, body: "{}" }; });
+  new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" }, ip, user, async (url, init) => { calls.push({ url, headers: init.headers }); if (fail) throw fail; return { status: 200, body: "{}" }; });
 const counterValue = async (name: string, labels: Record<string, string>) => {
   const m = (await register.getMetricsAsJSON()).find((x) => x.name === name) as any;
   return m?.values.filter((v: any) => Object.entries(labels).every(([k, x]) => v.labels[k] === x)).reduce((s: number, v: any) => s + v.value, 0) ?? 0;
@@ -111,7 +111,7 @@ describe("gateway business metrics", () => {
 
   it("the upstream label comes from the route, not from comparing URLs: QUEUE_URL equal to INVENTORY_URL still labels both correctly", async () => {
     const err = (upstream: string) => counterValue("gateway_upstream_errors_total", { upstream, reason: "unreachable" });
-    const same = new GatewayService({ inventoryUrl: "http://same", queueUrl: "http://same", paymentsUrl: "http://pay", secret, internalToken: "internal" }, limiter(true), limiter(true), async () => { throw new Error("ECONNREFUSED"); });
+    const same = new GatewayService({ inventoryUrl: "http://same", queueUrl: "http://same", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" }, limiter(true), limiter(true), async () => { throw new Error("ECONNREFUSED"); });
     const before = { q: await err("queue"), i: await err("inventory") };
     await same.handle("POST", "/events/1/queue/join", "", "{}", "i");
     expect(await err("queue")).toBe(before.q + 1);

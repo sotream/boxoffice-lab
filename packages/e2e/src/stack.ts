@@ -11,6 +11,8 @@ const ROOT = join(__dirname, "..", "..", "..");
 export const SECRET = "e2e-secret";
 /** Shared secret between the gateway and payments; the tests that talk to payments directly use it too. */
 export const INTERNAL_TOKEN = "e2e-internal-token";
+/** Inventory's own key (a separate key per callee): the gateway and payments sign their calls to inventory with it; the tests that talk to inventory directly use it too. */
+export const INVENTORY_INTERNAL_TOKEN = "e2e-inventory-internal-token";
 export type Name = "inventory" | "waiting-room" | "gateway" | "payments" | "notifications";
 const DIR: Record<Name, string> = { inventory: "services/inventory", "waiting-room": "services/waiting-room", gateway: "services/gateway", payments: "services/payments", notifications: "services/notifications" };
 
@@ -110,15 +112,15 @@ export class Stack {
     const paymentsInventoryUrl = opts.inventoryUrlForPayments ? await opts.inventoryUrlForPayments(this.urls.inventory) : this.urls.inventory;
     const dbg: Record<string, string> = opts.debugLogs ? { LOG_LEVEL: "debug" } : {};
     const db = { DATABASE_URL: this.dbUrl };
-    this.envs.set("inventory", { PORT: String(this.ports.inventory), SEED_SEATS: String(opts.seats), ...(opts.holdSeconds ? { HOLD_SECONDS: String(opts.holdSeconds) } : {}), ...db, ...dbg, ...opts.env?.inventory });
+    this.envs.set("inventory", { PORT: String(this.ports.inventory), INVENTORY_INTERNAL_TOKEN, SEED_SEATS: String(opts.seats), ...(opts.holdSeconds ? { HOLD_SECONDS: String(opts.holdSeconds) } : {}), ...db, ...dbg, ...opts.env?.inventory });
     this.envs.set("waiting-room", { PORT: String(this.ports["waiting-room"]), REDIS_URL: this.redisUrl, ADMISSION_SECRET: SECRET, ADMIT_PER_SECOND: String(opts.admitPerSecond ?? 300), ...opts.env?.["waiting-room"] });
     this.envs.set("gateway", {
       PORT: String(this.ports.gateway), OPS_PORT: String(this.ports.gatewayOps), REDIS_URL: this.redisUrl, INVENTORY_URL: this.urls.inventory, QUEUE_URL: this.urls["waiting-room"], PAYMENTS_URL: this.urls.payments,
-      ADMISSION_SECRET: SECRET, PAYMENTS_INTERNAL_TOKEN: INTERNAL_TOKEN, IP_RATE: "100000", IP_BURST: "100000", USER_RATE: "1000", USER_BURST: "1000", UPSTREAM_TIMEOUT_MS: "8000", ...dbg, ...opts.gatewayEnv, ...opts.env?.gateway
+      ADMISSION_SECRET: SECRET, PAYMENTS_INTERNAL_TOKEN: INTERNAL_TOKEN, INVENTORY_INTERNAL_TOKEN, IP_RATE: "100000", IP_BURST: "100000", USER_RATE: "1000", USER_BURST: "1000", UPSTREAM_TIMEOUT_MS: "8000", ...dbg, ...opts.gatewayEnv, ...opts.env?.gateway
     });
     this.envs.set("payments", {
       PORT: String(this.ports.payments), INVENTORY_URL: paymentsInventoryUrl, KAFKA_BROKER: this.broker, ...db,
-      PAYMENTS_INTERNAL_TOKEN: INTERNAL_TOKEN, SEAT_PRICE_CENTS: String(SEAT_PRICE_CENTS), // the price is the server's: the clients' expectation (load.ts) must equal it
+      PAYMENTS_INTERNAL_TOKEN: INTERNAL_TOKEN, INVENTORY_INTERNAL_TOKEN, SEAT_PRICE_CENTS: String(SEAT_PRICE_CENTS), // the price is the server's: the clients' expectation (load.ts) must equal it
       PSP_LATENCY_MS: String(opts.pspLatencyMs ?? 50), PSP_FAIL_RATE: String(opts.pspFailRate ?? 0), ...dbg, ...opts.env?.payments
     });
     this.envs.set("notifications", {

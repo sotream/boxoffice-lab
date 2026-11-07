@@ -20,6 +20,8 @@ export interface GatewayConfig {
   secret: string;
   /** Key with which every forwarded payment is signed (`x-internal-auth`); the key itself is never sent. */
   internalToken: string;
+  /** Key with which every request forwarded to inventory is signed (inventory's own key, not payments'); never sent. */
+  inventoryInternalToken: string;
 }
 
 type UpstreamName = "queue" | "inventory" | "payments";
@@ -95,9 +97,13 @@ export class GatewayService {
     const base = upstreamName === "queue" ? this.cfg.queueUrl : upstreamName === "payments" ? this.cfg.paymentsUrl : this.cfg.inventoryUrl;
     const t0 = process.hrtime.bigint();
     try {
-      const res = await this.upstream(`${base}${prepared.path ?? path}${prepared.query ?? query}`, {
-        method, body: prepared.body ?? body,
-        headers: { "content-type": "application/json", "x-forwarded-for": forwardedFor, ...outgoingHeaders(), ...prepared.headers }
+      const sendPath = prepared.path ?? path;
+      const sendBody = prepared.body ?? body;
+      // Inventory authenticates every request: sign the path without the query and the exact body that is sent (the payments request is signed in the gate).
+      const inventoryAuth: Record<string, string> = upstreamName === "inventory" ? { [INTERNAL_AUTH_HEADER]: signInternalRequest(this.cfg.inventoryInternalToken, method, sendPath, sendBody ?? "") } : {};
+      const res = await this.upstream(`${base}${sendPath}${prepared.query ?? query}`, {
+        method, body: sendBody,
+        headers: { "content-type": "application/json", "x-forwarded-for": forwardedFor, ...outgoingHeaders(), ...inventoryAuth, ...prepared.headers }
       });
       return { status: res.status, body: res.body };
     } catch (e) {

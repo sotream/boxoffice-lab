@@ -17,6 +17,8 @@ const cfg = loadConfigOrExit((e) => ({
   secret: e.secret("ADMISSION_SECRET", "dev-secret"),
   // Shared secret sent to payments on every forwarded payment; must equal the payments service's. Refused with the dev default in production.
   internalToken: e.secret("PAYMENTS_INTERNAL_TOKEN", "dev-internal-token"),
+  // Key with which every request forwarded to inventory is signed; must equal the inventory service's (and the one payments signs with). Refused with the dev default in production.
+  inventoryInternalToken: e.secret("INVENTORY_INTERNAL_TOKEN", "dev-inventory-internal-token"),
   ipRate: e.num("IP_RATE", 50, { min: 0.0001 }), ipBurst: e.num("IP_BURST", 100, { min: 1 }),
   userRate: e.num("USER_RATE", 5, { min: 0.0001 }), userBurst: e.num("USER_BURST", 10, { min: 1 }),
   upstreamTimeoutMs: e.int("UPSTREAM_TIMEOUT_MS", 2000, { min: 1 }),
@@ -30,7 +32,7 @@ const redis = new Redis(cfg.redisUrl, {
 });
 redis.on("error", () => undefined); // reconnection is automatic; errors surface per request
 const svc = new GatewayService(
-  { inventoryUrl: cfg.inventoryUrl, queueUrl: cfg.queueUrl, paymentsUrl: cfg.paymentsUrl, secret: cfg.secret, internalToken: cfg.internalToken },
+  { inventoryUrl: cfg.inventoryUrl, queueUrl: cfg.queueUrl, paymentsUrl: cfg.paymentsUrl, secret: cfg.secret, internalToken: cfg.internalToken, inventoryInternalToken: cfg.inventoryInternalToken },
   new RateLimiter(redis, cfg.ipRate, cfg.ipBurst),
   new RateLimiter(redis, cfg.userRate, cfg.userBurst),
   async (url, init) => {

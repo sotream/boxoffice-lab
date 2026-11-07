@@ -26,7 +26,9 @@ async function bootstrap() {
       // Key of the service-to-service request signature (the gateway signs with it, the secret itself is never sent); the development default is
       // refused with NODE_ENV=production. The previous key is accepted as well while it is being rotated out.
       internalToken: e.secret("PAYMENTS_INTERNAL_TOKEN", "dev-internal-token"),
-      internalTokenPrevious: e.optionalSecret("PAYMENTS_INTERNAL_TOKEN_PREVIOUS", ["dev-internal-token"]) };
+      internalTokenPrevious: e.optionalSecret("PAYMENTS_INTERNAL_TOKEN_PREVIOUS", ["dev-internal-token"]),
+      // Inventory's key, with which payments signs confirm and holds/verify (read again by app.module.ts; validated here so the development default is refused in production).
+      inventoryInternalToken: e.secret("INVENTORY_INTERNAL_TOKEN", "dev-inventory-internal-token") };
   });
 
   const migrationPool = createPool(1, 0); // migrations: no statement timeout (the shared helper also switches it off per connection)

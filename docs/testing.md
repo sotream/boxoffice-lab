@@ -141,6 +141,16 @@ It refuses to mutate `packages/platform`, `main.ts`, `db.ts`, `app.module.ts`, g
 | `pay-verify-http-5xx-as-no` | payments | every error status of the check is read as 'not held' | KILLED |
 | `inv-verify-ignores-owner` | inventory | the check ignores who holds the seats | KILLED |
 | `inv-verify-ignores-expiry` | inventory | the check accepts an expired hold | KILLED |
+| `inv-auth-skip` | inventory | the request signature is no longer verified | KILLED |
+| `inv-auth-body-ignored` | inventory | the signature is verified against an empty body instead of the received one | KILLED |
+| `inv-auth-single-secret` | inventory | only the first configured key is accepted, so a rotation locks the previous key out | KILLED |
+| `inv-auth-body-cap-off` | inventory | a body of any size is buffered before the signature is checked | KILLED |
+| `gw-inv-not-signed` | gateway | holds, confirm and availability are forwarded to inventory without a signature | KILLED |
+| `gw-inv-wrong-key` | gateway | the gateway signs its inventory requests with the payments key | KILLED |
+| `gw-inv-sign-other-body` | gateway | the gateway signs an empty body instead of the one it sends to inventory | KILLED |
+| `pay-confirm-not-signed` | payments | payments calls inventory confirm without a signature | KILLED |
+| `pay-verify-not-signed` | payments | payments calls inventory holds/verify without a signature | KILLED |
+| `pay-confirm-inventory-key-mixup` | payments | payments signs confirm with a hard-coded key instead of the inventory key | KILLED |
 
 69 mutations: 64 killed in a single full run on 2026-11-07 and the 5 added afterwards for the pre-charge check (payments ADR 007) killed in an individual run (the full runner has not been repeated since) (`node scripts/mutation-check.mjs`, no survivors, working tree restored afterwards). The three mutations of the static `x-internal-token` were replaced by six for the request signature (`pay-token-skip`, `pay-auth-body-ignored`, `pay-auth-single-secret`, `pay-auth-body-cap-off`, `gw-pay-token-header`, `gw-pay-sign-other-body`); the `onRequest` freshness hook has no mutation because the `preParsing` verification rejects the same stale headers, so it is defence in depth that no test can tell apart. The signing code itself lives in `packages/platform`, which the runner does not mutate; it is covered by `internal-auth.test.ts` there (properties: any one-character tamper is rejected, sign then verify is true). Two existing payments controller tests were vacuous once the price check existed (their body had a wrong amount, so the 400 came from the price, not from the rule under test); they now send no amount, and `pay-seats-validation` / `pay-int4-bound` are killed by the intended tests. After the lock-order fix two inventory mutations had stale `find` strings (the SQL changed) and one was caught by a different test than expected (a deadlock surfaces in whichever concurrent test hits it first); the definitions were updated, no mutation survived. `inv-forupdate-orderby` first survived: ids are sorted before the query and a small table is locked in key order by the planner anyway, so no concurrency test can tell; it is now killed by the statement-level lock-ordering test, which is a contract check rather than a behavioural one.
 
