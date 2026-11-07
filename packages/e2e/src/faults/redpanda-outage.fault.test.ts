@@ -25,7 +25,13 @@ describe("fault 3: Redpanda stopped for 15 s in the middle of the sale", () => {
     const endOutage = { payments: await count(s, "payments.payments"), published: await count(s, "payments.outbox WHERE published_at IS NOT NULL"), backlog: await count(s, "payments.outbox WHERE published_at IS NULL") };
     const backlogIds = (await s.q<{ id: string }>(`SELECT id::text FROM payments.outbox WHERE published_at IS NULL ORDER BY id`)).map((r) => Number(r.id));
     const gauge = await s.counter(s.urls.payments, "payments_outbox_backlog");
-    const relayErrors = (await s.counter(s.urls.payments, "payments_outbox_relay_errors_total")) ?? 0;
+    // The relay counts an error only when a publish attempt to the stopped broker fails; on a slow machine the first attempt can
+    // still be in its client-side retry/timeout when the 15 s are over, so wait (broker still down) for the first failure.
+    let relayErrors = (await s.counter(s.urls.payments, "payments_outbox_relay_errors_total")) ?? 0;
+    for (let i = 0; relayErrors === 0 && i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 1_000));
+      relayErrors = (await s.counter(s.urls.payments, "payments_outbox_relay_errors_total")) ?? 0;
+    }
     const oldest = await s.counter(s.urls.payments, "payments_outbox_oldest_unpublished_age_seconds");
     const readyDuring = sampler.between("payments", t0 + 3000, Date.now());
     const aliveDuring = s.alive("payments");
