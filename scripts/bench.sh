@@ -17,6 +17,8 @@
 #                    the VM/container layer (macOS com.apple.Virtualization.VirtualMachine, Linux dockerd, containerd-shim),
 #                    from `ps -Ao pcpu,comm`. Raw samples go to cpu-<label>.log, a peak/mean table to the output and table.md.
 #   BENCH_CPU_INTERVAL  seconds between CPU samples (default 5)
+#   INVENTORY_INTERNAL_TOKEN, PAYMENTS_INTERNAL_TOKEN  request-signing keys; inherited by the started services and by k6 (hold.js and pay.js sign),
+#                    so unset (the development defaults on both sides) works and a custom value only has to be exported once
 # Nothing in the k6 scripts is changed; services are started from dist/ and are always killed on exit.
 set -euo pipefail
 

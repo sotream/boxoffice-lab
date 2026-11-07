@@ -1,19 +1,22 @@
 // Drill 4: the payment provider becomes slow (not dead). Measures what clients see, how many DB connections the
 // service holds meanwhile, and how long after recovery every payment reaches a final state.
-// Usage: node drills/slow-psp.mjs [slowMs=3000]   (needs inventory 3101 and payments 3103 with PSP_ADMIN=1 running; PAYMENTS_INTERNAL_TOKEN if it is not the dev default; payments is priced by the server)
+// Usage: node drills/slow-psp.mjs [slowMs=3000]   (needs inventory 3101 and payments 3103 with PSP_ADMIN=1 running; PAYMENTS_INTERNAL_TOKEN and INVENTORY_INTERNAL_TOKEN if they are not the dev defaults; payments is priced by the server)
 import { execSync } from "node:child_process";
 import { signInternal } from "./internal-sign.mjs";
 const SLOW = Number(process.argv[2] ?? 3000), N = 300, CLIENTS = 100;
 const sh = (c) => execSync(c, { encoding: "utf8" }).trim();
 const psql = (q) => sh(`docker exec boxoffice-lab-postgres-1 psql -U lab -tAc "${q}"`);
-// payments and its admin endpoint need a signed request (the secret itself is never sent)
-const post = (url, body, headers = {}, ms = 20000, sign = false) => { const b = JSON.stringify(body); return fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers, ...(sign ? signInternal("POST", new URL(url).pathname, b) : {}) }, body: b, signal: AbortSignal.timeout(ms) }); };
+// payments, its admin endpoint and inventory need a signed request (`sign`: true = payments key, "inventory" = inventory key; the secret itself is never sent)
+const post = (url, body, headers = {}, ms = 20000, sign = false) => { const b = JSON.stringify(body); return fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers, ...(sign ? signInternal("POST", new URL(url).pathname, b, sign === true ? "payments" : sign) : {}) }, body: b, signal: AbortSignal.timeout(ms) }); };
 const psp = (latencyMs) => post("http://localhost:3103/admin/psp", { latencyMs }, {}, 20000, true);
 const run = Date.now();
 
 await psp(0);
 // every payment gets a held seat, so the happy path (charge, confirm) is what we measure
-await Promise.all(Array.from({ length: N }, (_, i) => post("http://localhost:3101/events/1/holds", { seatIds: [10000 + run % 1000 * 0 + i], userId: `s${i}` })));
+const holds = await Promise.all(Array.from({ length: N }, (_, i) => post("http://localhost:3101/events/1/holds", { seatIds: [10000 + run % 1000 * 0 + i], userId: `s${i}` }, {}, 20000, "inventory").then((r) => r.status)));
+// 201 = held now, 409 = still held by the same drill from an earlier run; anything else (401: wrong or missing INVENTORY_INTERNAL_TOKEN) would silently turn the drill into a measurement of something else
+const badHolds = holds.filter((c) => c !== 201 && c !== 409);
+if (badHolds.length) { console.error(`${badHolds.length} of ${N} holds were refused with ${[...new Set(badHolds)].join(", ")}: check INVENTORY_INTERNAL_TOKEN`); process.exit(1); }
 await psp(SLOW);
 const lat = [], codes = {};
 let next = 0, peakConn = 0, stop = false;
