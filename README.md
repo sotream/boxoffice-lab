@@ -29,6 +29,8 @@
 </p>
 
 
+> **Status:** a learning and design lab, not a production system. Its known gaps are listed in [Limits of this lab](#limits-of-this-lab) and in [SECURITY.md](SECURITY.md).
+
 | 6 services | 14 ADRs | 5 failure drills | 52 mutations, 52 killed | 5 paper designs |
 |:---:|:---:|:---:|:---:|:---:|
 | inventory, waiting-room, gateway, payments, notifications, catalog | [indexed with status](docs/adr-index.md) | broker, cache, consumer, provider down or slow; DLQ replay | [mutation check of the tests](docs/testing.md#mutation-check) | URL shortener, feed, ledger, ingestion, file pipeline |
@@ -248,8 +250,12 @@ CI (`.github/workflows/ci.yml`): Postgres 18 and Redis 7 as service containers, 
 - Payments: the 561 and 904 payments/s figures were taken on the compensation path before the `REFUNDING` claim added a commit to it (ADR 005); they are marked to-be-remeasured in [payments CAPACITY](services/payments/CAPACITY.md).
 - The figures are per-instance planning numbers for the capacity formulas, not production claims. Re-measure on target hardware.
 - The SLO targets and alert thresholds in [operations.md](docs/operations.md) are proposals, not calibrated against production traffic. There is no tracing backend: trace ids are propagated and logged, spans are not exported.
-- The mutation check covers inventory, waiting-room, gateway, admission, capacity, catalog and notifications; it refuses to mutate payments and `packages/platform`.
+- The mutation check covers inventory, waiting-room, gateway, admission, capacity, catalog, notifications and the payments saga (52 mutations); it deliberately does not mutate `packages/platform` and the service bootstraps (`main.ts`, `db.ts`, `app.module.ts`), which are wiring covered by the spawned-process tests.
 - No multi-node setup was tested: no Redis failover, no Postgres replicas, no real network between services.
 - OpenSearch/Elasticsearch was not run; the catalog ADR argues from its documented trade-offs, not from measurements.
 - The gateway is plain Fastify standing in for Envoy or Kong; the PSP and email providers are fakes with fixed latency.
 - Admission is a fixed budget, not adaptive to inventory latency, and the admission tick serves event 1 only.
+
+## License
+
+[MIT](LICENSE)
