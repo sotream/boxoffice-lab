@@ -117,12 +117,14 @@ It refuses to mutate `packages/platform`, `main.ts`, `db.ts`, `app.module.ts`, g
 | `pay-trace-not-stored` | payments | request trace not stored on the payment row | KILLED |
 | `pay-relay-id-string` | payments | outbox id published as a string and dead-lettered | KILLED |
 | `gw-user-mismatch` | gateway | gateway forwards a body whose userId differs from the admission token | KILLED |
+| `gw-method-405` | gateway | holds and confirms accept any method and skip the identity check | KILLED |
+| `pay-int4-bound` | payments | ids beyond int4 pass validation and the card is charged first | KILLED |
 | `pay-confirm-4xx-refund` | payments | any 4xx from inventory is read as lost seats and refunds a valid payment | KILLED |
 | `pay-sweep-swallows` | payments | the sweeper discards the failures of sagas it could not advance | KILLED |
 | `pay-seats-validation` | payments | the controller accepts empty or oversized seat lists and charges the card | KILLED |
 | `not-dlq-count-before-send` | notifications | the DLQ counter is never incremented | KILLED |
 
-50 of 50 killed on the last run (2026-11-06). After the lock-order fix two inventory mutations had stale `find` strings (the SQL changed) and one was caught by a different test than expected (a deadlock surfaces in whichever concurrent test hits it first); the definitions were updated, no mutation survived. `inv-forupdate-orderby` first survived: ids are sorted before the query and a small table is locked in key order by the planner anyway, so no concurrency test can tell; it is now killed by the statement-level lock-ordering test, which is a contract check rather than a behavioural one.
+52 of 52 killed on the last run (2026-11-06). After the lock-order fix two inventory mutations had stale `find` strings (the SQL changed) and one was caught by a different test than expected (a deadlock surfaces in whichever concurrent test hits it first); the definitions were updated, no mutation survived. `inv-forupdate-orderby` first survived: ids are sorted before the query and a small table is locked in key order by the planner anyway, so no concurrency test can tell; it is now killed by the statement-level lock-ordering test, which is a contract check rather than a behavioural one.
 
 ## Bugs found by these tests
 

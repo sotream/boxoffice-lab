@@ -29,7 +29,7 @@
 </p>
 
 
-| 6 services | 14 ADRs | 5 failure drills | 50 mutations, 50 killed | 5 paper designs |
+| 6 services | 14 ADRs | 5 failure drills | 52 mutations, 52 killed | 5 paper designs |
 |:---:|:---:|:---:|:---:|:---:|
 | inventory, waiting-room, gateway, payments, notifications, catalog | [indexed with status](docs/adr-index.md) | broker, cache, consumer, provider down or slow; DLQ replay | [mutation check of the tests](docs/testing.md#mutation-check) | URL shortener, feed, ledger, ingestion, file pipeline |
 
@@ -54,7 +54,7 @@ The headline claims are correctness claims, and each has a test that tries to br
 | The payments saga never double-charges, double-refunds or loses an event, whatever crashes | crash injected at 8 boundaries, a reusable PSP contract suite, model-based test with random crashes and 1 to 4 concurrent runners; `REFUNDING` is claimed before the refund ([ADR 005](services/payments/adr/005-claim-refund-before-issuing-it.md)) | `pnpm --filter @boxoffice/payments test` |
 | Notifications are delivered at least once with no duplicate effects; poison messages never block a partition | random duplicates, redeliveries and flaky providers; the real consumer against a fake broker | `pnpm --filter @boxoffice/notifications test` |
 | The cache never serves wrong data | TTL jitter bounds, unambiguous keys, input fuzz with no 5xx | `pnpm --filter @boxoffice/catalog test` |
-| The tests themselves catch real breakage | a dependency-free mutation runner breaks the production code one way at a time and requires a named test to fail: 50 mutations in `scripts/mutations.json`, 50 killed on the last run (2026-11-06) | `pnpm test:mutation` (about 8 minutes, edits and restores source files) |
+| The tests themselves catch real breakage | a dependency-free mutation runner breaks the production code one way at a time and requires a named test to fail: 52 mutations in `scripts/mutations.json`, 52 killed on the last run (2026-11-06) | `pnpm test:mutation` (about 8 minutes, edits and restores source files) |
 | The whole pipeline keeps its invariants, including through `kill -9` | `packages/e2e` starts the real built services as processes (private Postgres database, Redis logical DB and Kafka topic), runs a 300-user flash sale, the same sale with `kill -9` of payments and of the notifications consumer, and a limiter-overload storm, then reads the databases: no seat sold twice, sold seats equal confirmed payments, money conserved, one outbox event per payment, no duplicate deliveries, request id present end to end. It found a bug no unit test had: every real event was dead-lettered because the outbox id was a string. Details and limits: [docs/e2e.md](docs/e2e.md) | `pnpm test:e2e` (about 2.5 minutes, needs Redpanda) |
 | The system degrades the way the docs say | five failure drills with raw output saved in [`docs/drill-output/`](docs/drill-output/) | [docs/failure-drills.md](docs/failure-drills.md) |
 | Alert rules and runbooks match the code | `pnpm ops:check` fails if an alert names a metric or label no service defines, or the metric table is stale | `pnpm ops:check` |
@@ -67,13 +67,13 @@ Coverage thresholds are set in the `vitest.config.ts` of every package except `p
 
 ![Flash sale estimation chain](docs/img/flash-sale-math.svg)
 
-The admission budget in the second picture is derived as 2 600 x 0.6 / 3 = 520 users/s (531 from the unrounded 2 654) and configured as 500, deliberately a little below the derived value. The 2 600 is the measured 2 654 hold RPS rounded down; rounded figures like this one are listed in [numbers-to-know](docs/numbers-to-know.md). The measured figures in both pictures predate the metrics and logging of `@boxoffice/platform` (see [Limits](#limits-of-this-lab)).
+The admission budget in the second picture is derived as 2 600 x 0.6 / 3 = 520 users/s (531 from the unrounded 2 654) and configured as 500, deliberately a little below the derived value. The 2 600 is the measured 2 654 hold RPS rounded down; rounded figures like this one are listed in [numbers-to-know](docs/numbers-to-know.md). The measured figures in both pictures predate the metrics and logging of `@boxoffice/platform` (see [Limits](#limits-of-this-lab)). Re-measured on the final code, inventory holds 2 294 RPS, which would give about 459 users/s, so the configured 500 is now roughly 9% above the re-derived value (left unchanged pending a decision).
 
 ## Question, service, decision, number
 
 | Design question | Service | Key decision | Measured number |
 |---|---|---|---|
-| How do you prevent double booking? | [inventory](services/inventory) | [One conditional `UPDATE ... WHERE free`, not check-then-write](services/inventory/adr/001-hold-strategy.md) | 2 654 hold RPS per instance (planned as 2 600), p99 31.7 ms; held seats equal successful holds, no oversell |
+| How do you prevent double booking? | [inventory](services/inventory) | [One conditional `UPDATE ... WHERE free`, not check-then-write](services/inventory/adr/001-hold-strategy.md) | 2 654 hold RPS per instance on the first version (planned as 2 600); 2 294 on the final code, see [RESULTS](services/inventory/RESULTS.md), p99 31.7 ms; held seats equal successful holds, no oversell |
 | 50 000 people open the page at once | [waiting-room](services/waiting-room) | [Redis sorted set, sequence as score](services/waiting-room/adr/001-redis-sorted-set-queue.md) | 10 134 RPS per instance (planned as 10 100), p99 22.3 ms, at most 140 B per queued user (planning figure 100 to 150 B) |
 | Design a rate limiter | [gateway](services/gateway) | [Token bucket in Redis + Lua](services/gateway/adr/001-token-bucket-redis.md), [signed admission token](services/gateway/adr/001-token-bucket-redis.md#adr-002-signed-admission-token-instead-of-a-redis-lookup) | 2 001 RPS through the gateway vs 2 485 direct (about 19% less) |
 | Saga vs 2PC, safe retries, DB write plus event | [payments](services/payments) | [Orchestrated saga](services/payments/adr/001-saga-over-2pc.md), [outbox, idempotency key](services/payments/adr/001-saga-over-2pc.md#adr-002-transactional-outbox-not-write-db-then-publish), [refund claimed before it is issued](services/payments/adr/005-claim-refund-before-issuing-it.md) | 561 payments/s per instance at a 100 ms PSP (904 at 0 ms), Postgres-bound; **to be re-measured** (taken before the `REFUNDING` commit existed); 15 097 payments = 15 097 outbox rows = 15 097 published, 0 duplicate keys |
@@ -175,6 +175,7 @@ Each service validates its environment at start and exits with code 78 and one m
 |---|---|---|
 | `PORT` | gateway, inventory, waiting-room, payments, catalog | 3100, 3101, 3102, 3103, 3104 |
 | `OPS_PORT` | notifications, gateway | 3105, 3106 |
+| `OPS_HOST` | gateway | `127.0.0.1` (ops port bind address; `0.0.0.0` in containers and for the `observability` profile) |
 | `DATABASE_URL` | inventory, payments, catalog, notifications (via `@boxoffice/platform`) | `postgres://lab:lab@localhost:55432/lab` |
 | `PG_POOL` | inventory, payments, catalog | 20 |
 | `REDIS_URL` | gateway, waiting-room, catalog | `redis://localhost:56379` |
