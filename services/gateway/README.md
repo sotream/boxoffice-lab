@@ -42,7 +42,7 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 | `INVENTORY_URL` | `http://localhost:3101` | Upstream |
 | `QUEUE_URL` | `http://localhost:3102` | Upstream (waiting-room) |
 | `PAYMENTS_URL` | `http://localhost:3103` | Upstream (payments), used by `POST /events/:id/pay` |
-| `PAYMENTS_INTERNAL_TOKEN` | `dev-internal-token` | Sent to payments in `x-internal-token`; must equal payments' value. With `NODE_ENV=production` it must be set and not the default, otherwise exit 78 |
+| `PAYMENTS_INTERNAL_TOKEN` | `dev-internal-token` | The HMAC key with which every forwarded payment is signed (`x-internal-auth`, never sent itself); must equal payments' value. With `NODE_ENV=production` it must be set and not the default, otherwise exit 78 |
 | `ADMISSION_SECRET` | `dev-secret` | Must equal the waiting-room's. With `NODE_ENV=production` it must be set and not `dev-secret`, otherwise exit 78 |
 | `IP_RATE`, `IP_BURST` | 50, 100 | Per-IP bucket, tokens per second and burst |
 | `USER_RATE`, `USER_BURST` | 5, 10 | Per-user bucket |

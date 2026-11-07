@@ -5,6 +5,7 @@ export * from "./pool";
 export * from "./metrics";
 export * from "./health";
 export * from "./http";
+export * from "./internal-auth";
 export * from "./ops-server";
 export * from "./loop";
 export * from "./shutdown";

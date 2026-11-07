@@ -18,8 +18,10 @@ async function bootstrap() {
     e.int("PSP_TIMEOUT_MS", 2000, { min: 1 }); e.int("CONFIRM_TIMEOUT_MS", 2000, { min: 1 }); e.bool("PSP_ADMIN", false);
     e.int("SEAT_PRICE_CENTS", 5000, { min: 1, max: 100_000_000 }); // 8 seats must still fit the int4 column
     return { port: e.port("PORT", 3103), broker: e.hostPort("KAFKA_BROKER", "localhost:59092"), shutdown: shutdownEnv(e),
-      // Shared secret of the service-to-service call (the gateway sends it); the development default is refused with NODE_ENV=production.
-      internalToken: e.secret("PAYMENTS_INTERNAL_TOKEN", "dev-internal-token") };
+      // Key of the service-to-service request signature (the gateway signs with it, the secret itself is never sent); the development default is
+      // refused with NODE_ENV=production. The previous key is accepted as well while it is being rotated out.
+      internalToken: e.secret("PAYMENTS_INTERNAL_TOKEN", "dev-internal-token"),
+      internalTokenPrevious: e.optionalSecret("PAYMENTS_INTERNAL_TOKEN_PREVIOUS", ["dev-internal-token"]) };
   });
 
   const migrationPool = createPool(1, 0); // migrations: no statement timeout (the shared helper also switches it off per connection)
@@ -59,7 +61,7 @@ async function bootstrap() {
   // Kafka is reported but not critical: the outbox exists so that payments keep working while the broker is down (drill 2).
   const readiness = new Readiness([pgCheck(healthPool), tcpCheck(cfg.broker, "kafka", false)], { cacheMs: 1000 });
   const fastify = wireNest(app, readiness);
-  installInternalAuth(fastify, cfg.internalToken); // after the instrumentation hooks, so 401s are counted; before any body parsing or handler
+  installInternalAuth(fastify, cfg.internalTokenPrevious ? [cfg.internalToken, cfg.internalTokenPrevious] : [cfg.internalToken]); // after the instrumentation hooks, so 401s are counted; before any body parsing or handler
 
   const shutdown = createShutdown({ ...cfg.shutdown, readiness });
   shutdown.add("http server (stop accepting, drain in-flight)", () => drainHttp(app.getHttpServer(), () => app.close()));

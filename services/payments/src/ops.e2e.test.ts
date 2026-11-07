@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Kafka } from "kafkajs";
 import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createScratchDatabase, ensureBuilt, freePort, RunningService, spawnService, waitHealthy } from "@boxoffice/platform";
+import { createScratchDatabase, ensureBuilt, freePort, RunningService, signInternalRequest, spawnService, waitHealthy } from "@boxoffice/platform";
 
 const pkg = join(__dirname, "..");
 const BROKER = "localhost:59092";
@@ -38,8 +38,12 @@ const start = async (env: Record<string, string> = {}) => {
   await waitHealthy(base);
   return { svc, base };
 };
-const pay = (base: string, key: string, headers: Record<string, string> = {}) =>
-  fetch(`${base}/payments`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key, "x-internal-token": TOKEN, ...headers }, body: JSON.stringify({ eventId: 987002, userId: "ops-e2e", seatIds: [1], amountCents: 1000 }) });
+/** The request signature the gateway would add: HMAC over timestamp, method, path and the exact body. */
+const sign = (path: string, body: string, secret = TOKEN, now = Date.now()) => ({ "x-internal-auth": signInternalRequest(secret, "POST", path, body, now) });
+const pay = (base: string, key: string, headers: Record<string, string> = {}) => {
+  const body = JSON.stringify({ eventId: 987002, userId: "ops-e2e", seatIds: [1], amountCents: 1000 });
+  return fetch(`${base}/payments`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key, ...sign("/payments", body), ...headers }, body });
+};
 
 describe("payments process", () => {
   it("healthz/readyz/metrics; one request id follows the purchase into inventory and into the Kafka headers", async () => {
@@ -103,7 +107,11 @@ describe("payments process", () => {
 
       // 401 without or with a wrong token, before the body is looked at and before any row is written
       expect((await post("/payments", { "idempotency-key": key }, good)).status).toBe(401);
-      expect((await post("/payments", { "idempotency-key": key, "x-internal-token": "wrong" }, good)).status).toBe(401);
+      expect((await post("/payments", { "idempotency-key": key, ...sign("/payments", good, "wrong") }, good)).status).toBe(401);
+      // a valid signature does not carry over to another body, another path or a later time
+      expect((await post("/payments", { "idempotency-key": key, ...sign("/payments", good) }, JSON.stringify({ ...JSON.parse(good), seatIds: [1, 2, 3] }))).status).toBe(401);
+      expect((await post("/payments", { "idempotency-key": key, ...sign("/admin/psp", good) }, good)).status).toBe(401);
+      expect((await post("/payments", { "idempotency-key": key, ...sign("/payments", good, TOKEN, Date.now() - 60_000) }, good)).status).toBe(401);
       expect((await post("/payments", { "idempotency-key": key }, "{not json")).status).toBe(401);
       expect((await post("/payments", {}, "{}")).status).toBe(401); // not even the missing key (400) is reported to an unauthenticated caller
       expect(await rowsFor(key)).toEqual([]);
@@ -111,25 +119,27 @@ describe("payments process", () => {
       // probes stay open; the admin endpoint needs the token as well
       for (const p of ["/healthz", "/readyz", "/metrics"]) expect((await fetch(`${base}${p}`)).status, p).toBe(200);
       expect((await post("/admin/psp", {}, '{"latencyMs":5}')).status).toBe(401);
-      const admin = await post("/admin/psp", { "x-internal-token": TOKEN }, '{"latencyMs":5}');
+      const admin = await post("/admin/psp", sign("/admin/psp", '{"latencyMs":5}'), '{"latencyMs":5}');
       expect(admin.status).toBe(201);
       expect(await admin.json()).toEqual({ ok: true, latencyMs: 5 });
 
       // a tampered amount is a 400 and nothing is charged; no amount at all is priced by the server (2 seats x 1000)
-      const auth = { "idempotency-key": key, "x-internal-token": TOKEN };
-      expect((await post("/payments", auth, JSON.stringify({ ...JSON.parse(good), amountCents: 1 }))).status).toBe(400);
+      const auth = (body: string) => ({ "idempotency-key": key, ...sign("/payments", body) });
+      const tampered = JSON.stringify({ ...JSON.parse(good), amountCents: 1 });
+      expect((await post("/payments", auth(tampered), tampered)).status).toBe(400);
       expect(await rowsFor(key)).toEqual([]);
-      const ok = await post("/payments", auth, good);
+      const ok = await post("/payments", auth(good), good);
       expect(ok.status).toBe(200);
       const first = await ok.json();
       expect(first.status).toBe("CONFIRMED");
       expect(await rowsFor(key)).toEqual([{ user_id: "ops-e2e", amount_cents: 2000 }]);
 
       // the same key and request again: the stored result; another user with that key gets an independent payment of their own
-      const again = await post("/payments", auth, good);
+      const again = await post("/payments", auth(good), good);
       expect(again.status).toBe(200);
       expect(await again.json()).toEqual(first);
-      const other = await post("/payments", auth, JSON.stringify({ eventId: 987002, userId: "mallory", seatIds: [1, 2] }));
+      const mallory = JSON.stringify({ eventId: 987002, userId: "mallory", seatIds: [1, 2] });
+      const other = await post("/payments", auth(mallory), mallory);
       expect(other.status).toBe(200);
       const otherBody = await other.json();
       expect(otherBody.paymentId).not.toBe(first.paymentId);

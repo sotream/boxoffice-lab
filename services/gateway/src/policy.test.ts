@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import { signAdmission } from "@boxoffice/admission";
+import { verifyInternalRequest } from "@boxoffice/platform";
 import { GatewayService, Upstream } from "./gateway.service";
 import { RateLimiter } from "./rate-limiter";
 
@@ -103,7 +104,11 @@ describe("pay: what is sent to payments", () => {
     expect(r.status).toBe(202);
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe("http://pay/payments");
-    expect(calls[0].init.headers["x-internal-token"]).toBe(INTERNAL);
+    // signed over the exact body that was sent; the secret itself is not on the wire
+    expect(calls[0].init.headers["x-internal-auth"]).toMatch(/^\d+\.[0-9a-f]{64}$/);
+    expect(verifyInternalRequest(calls[0].init.headers["x-internal-auth"], [INTERNAL], "POST", "/payments", calls[0].init.body!)).toBe(true);
+    expect(verifyInternalRequest(calls[0].init.headers["x-internal-auth"], [INTERNAL], "POST", "/payments", calls[0].init.body! + " ")).toBe(false);
+    expect(Object.values(calls[0].init.headers)).not.toContain(INTERNAL);
     expect(calls[0].init.headers["idempotency-key"]).toBe("idem-77");
     expect(JSON.parse(calls[0].init.body!)).toEqual({ userId: "alice", seatIds: [3, 4], eventId: EVENT });
   });
@@ -111,7 +116,7 @@ describe("pay: what is sent to payments", () => {
     for (const route of ["holds", "confirm"]) {
       const { svc, calls } = build("ok");
       await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"), undefined, "idem-1");
-      expect(calls[0].init.headers["x-internal-token"]).toBeUndefined();
+      expect(calls[0].init.headers["x-internal-auth"]).toBeUndefined();
       expect(calls[0].init.headers["idempotency-key"]).toBeUndefined();
     }
   });
