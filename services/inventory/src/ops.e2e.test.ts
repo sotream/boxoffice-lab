@@ -1,9 +1,10 @@
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { ensureBuilt, freePort, RunningService, spawnService, waitHealthy } from "@boxoffice/platform";
+import { ensureBuilt, freePort, RunningService, signInternalRequest, spawnService, waitHealthy } from "@boxoffice/platform";
 import { createPool } from "./db";
 
 const pkg = join(__dirname, "..");
+const TOKEN = "ops-e2e-inventory-token";
 const EVENT = 987001; // own event id: this test never touches the seats other tests use
 const pool = createPool(3);
 const live: RunningService[] = [];
@@ -19,13 +20,18 @@ beforeAll(async () => {
 
 const start = async (env: Record<string, string> = {}) => {
   const port = await freePort();
-  const svc = spawnService(pkg, { PORT: String(port), ...env });
+  const svc = spawnService(pkg, { PORT: String(port), INVENTORY_INTERNAL_TOKEN: TOKEN, ...env });
   live.push(svc);
   const base = `http://127.0.0.1:${port}`;
   await waitHealthy(base);
   return { svc, base };
 };
-const post = (url: string, body: unknown) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+/** Every inventory route needs a signed request: the signature covers the path without the query and the exact body. */
+const sign = (url: string, body: string, key = TOKEN) => ({ "x-internal-auth": signInternalRequest(key, "POST", new URL(url).pathname, body) });
+const post = (url: string, body: unknown, key = TOKEN) => {
+  const payload = JSON.stringify(body);
+  return fetch(url, { method: "POST", headers: { "content-type": "application/json", ...sign(url, payload, key) }, body: payload });
+};
 
 describe("inventory process: ops endpoints", () => {
   it("/healthz, /readyz and /metrics; hold results are counted by strategy and result", async () => {
@@ -36,7 +42,7 @@ describe("inventory process: ops endpoints", () => {
     expect((await ready.json()).checks.postgres.ok).toBe(true);
 
     const rid = "e2e-inventory-1";
-    const ok = await fetch(`${base}/events/${EVENT}/holds`, { method: "POST", headers: { "content-type": "application/json", "x-request-id": rid }, body: JSON.stringify({ seatIds: [1], userId: "u1" }) });
+    const ok = await fetch(`${base}/events/${EVENT}/holds`, { method: "POST", headers: { "content-type": "application/json", "x-request-id": rid, ...sign(`${base}/events/${EVENT}/holds`, '{"seatIds":[1],"userId":"u1"}') }, body: '{"seatIds":[1],"userId":"u1"}' });
     expect(ok.status).toBe(201);
     expect(ok.headers.get("x-request-id")).toBe(rid);
     expect((await post(`${base}/events/${EVENT}/holds`, { seatIds: [1], userId: "u2" })).status).toBe(409);
@@ -51,6 +57,31 @@ describe("inventory process: ops endpoints", () => {
     expect(text).toMatch(/pg_pool_total_connections\{pool="main",service="inventory"\}/);
     expect(text).not.toContain(`/events/${EVENT}`);
     expect(text).not.toContain("u1");
+  }, 30_000);
+
+  it("the running process refuses unsigned and wrongly signed requests with 401 (counted, with a request id) and holds nothing", async () => {
+    const { base } = await start();
+    const url = `${base}/events/${EVENT}/holds`;
+    const body = JSON.stringify({ seatIds: [15], userId: "intruder" });
+    const unsigned = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-request-id": "e2e-inv-401" }, body });
+    expect(unsigned.status).toBe(401);
+    expect(unsigned.headers.get("x-request-id")).toBe("e2e-inv-401");
+    expect((await post(url, { seatIds: [15], userId: "intruder" }, "some-other-key")).status).toBe(401);
+    expect((await fetch(`${base}/events/${EVENT}/confirm`, { method: "POST", headers: { "content-type": "application/json" }, body })).status).toBe(401);
+    expect((await fetch(`${base}/events/${EVENT}/availability`)).status).toBe(401);
+    expect((await pool.query("SELECT status FROM seats WHERE event_id=$1 AND seat_id=15", [EVENT])).rows[0].status).toBe("free");
+    const text = await (await fetch(`${base}/metrics`)).text();
+    expect(text).toContain(`http_requests_total{method="POST",route="/events/:eventId/holds",status_class="4xx",service="inventory"} 2`);
+    expect(text).toContain(`http_requests_total{method="GET",route="/events/:eventId/availability",status_class="4xx",service="inventory"} 1`);
+  }, 30_000);
+
+  it("refuses to boot with the development key in production, or without a key", async () => {
+    for (const env of [{ NODE_ENV: "production" }, { NODE_ENV: "production", INVENTORY_INTERNAL_TOKEN: "dev-inventory-internal-token" }]) {
+      const svc = spawnService(pkg, { PORT: String(await freePort()), ...env, INVENTORY_INTERNAL_TOKEN: (env as Record<string, string>).INVENTORY_INTERNAL_TOKEN ?? "" });
+      live.push(svc);
+      expect((await svc.exited).code).toBe(78);
+      expect(svc.output()).toMatch(/INVENTORY_INTERNAL_TOKEN (must be set when NODE_ENV=production|is set to a known development value)/);
+    }
   }, 30_000);
 
   it("an unreachable database at boot makes the process exit non-zero instead of serving", async () => {

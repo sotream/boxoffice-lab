@@ -10,6 +10,8 @@ const pool = createPool(Number(process.env.PG_POOL ?? 20));
 registerPoolMetrics(pool, "main");
 const psp = new FakePsp(Number(process.env.PSP_LATENCY_MS ?? 100), Number(process.env.PSP_FAIL_RATE ?? 0));
 const inventoryUrl = process.env.INVENTORY_URL ?? "http://localhost:3101";
+/** Key with which payments signs its calls to inventory (confirm, holds/verify); validated in main.ts, where the development default is refused in production. */
+const inventoryToken = process.env.INVENTORY_INTERNAL_TOKEN ?? "dev-inventory-internal-token";
 
 /** Drill hook (PSP_ADMIN=1 only): change the fake PSP latency at runtime to simulate a slow or recovering provider. */
 @Controller("admin")
@@ -26,8 +28,8 @@ class AdminController {
   controllers: [PaymentsController, AdminController],
   providers: [{ provide: SEAT_PRICE_CENTS, useFactory: () => Number(process.env.SEAT_PRICE_CENTS ?? 5000) }, {
     provide: PaymentsService,
-    useFactory: () => new PaymentsService(pool, psp, confirmSeatsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000)), Number(process.env.PSP_TIMEOUT_MS ?? 2000), undefined,
-      /^(0|false|no|off)$/i.test(process.env.VERIFY_HOLDS ?? "") ? undefined : verifyHoldsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000)))
+    useFactory: () => new PaymentsService(pool, psp, confirmSeatsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000), inventoryToken), Number(process.env.PSP_TIMEOUT_MS ?? 2000), undefined,
+      /^(0|false|no|off)$/i.test(process.env.VERIFY_HOLDS ?? "") ? undefined : verifyHoldsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000), inventoryToken))
   }]
 })
 export class AppModule {}

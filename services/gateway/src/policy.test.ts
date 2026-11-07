@@ -48,7 +48,7 @@ function build(limiter: LimiterState, upstream?: Upstream) {
   const up: Upstream = upstream ?? (async (url, init) => { calls.push({ url, init }); return { status: 202, body: '{"up":true}' }; });
   const wrapped: Upstream = async (url, init) => { if (!upstream) return up(url, init); calls.push({ url, init }); return upstream(url, init); };
   const svc = new GatewayService(
-    { inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret: SECRET, internalToken: INTERNAL },
+    { inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret: SECRET, internalToken: INTERNAL, inventoryInternalToken: "inventory-internal" },
     fakeLimiter(limiter, limits, "ip"),
     fakeLimiter(limiter, limits, "user"),
     wrapped
@@ -112,12 +112,14 @@ describe("pay: what is sent to payments", () => {
     expect(calls[0].init.headers["idempotency-key"]).toBe("idem-77");
     expect(JSON.parse(calls[0].init.body!)).toEqual({ userId: "alice", seatIds: [3, 4], eventId: EVENT });
   });
-  it("holds and confirms never get the internal credential or an idempotency key", async () => {
+  it("holds and confirms never get payments' credential or an idempotency key (they carry inventory's own signature)", async () => {
     for (const route of ["holds", "confirm"]) {
       const { svc, calls } = build("ok");
       await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"), undefined, "idem-1");
-      expect(calls[0].init.headers["x-internal-auth"]).toBeUndefined();
-      expect(calls[0].init.headers["idempotency-key"]).toBeUndefined();
+      const h = calls[0].init.headers;
+      expect(verifyInternalRequest(h["x-internal-auth"], [INTERNAL], "POST", `/events/${EVENT}/${route}`, '{"userId":"alice"}')).toBe(false); // not made with payments' key
+      expect(verifyInternalRequest(h["x-internal-auth"], ["inventory-internal"], "POST", `/events/${EVENT}/${route}`, '{"userId":"alice"}')).toBe(true);
+      expect(h["idempotency-key"]).toBeUndefined();
     }
   });
 });
