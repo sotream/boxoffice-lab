@@ -32,6 +32,19 @@ What changed (single laptop runs, **see the caveat below**): `atomic-update` mea
 
 Final code, Postgres 18 defaults, 4 vCPU, 5 runs, median (min-max): atomic low 1 711 (1 666-1 737), atomic hot 1 960 (1 925-1 968), for-update low 1 812 (1 789-1 821), for-update hot 2 476 (2 424-2 487). for-update is equal or faster, so the strategy gap above is not reproduced; the figures in this file are single laptop runs. Details: [benchmarks](../../docs/benchmarks.md).
 
+## Final code on a quiet M1 Air and on an M4 Pro (PostgreSQL 18)
+
+Medians of 5 runs, 2026-11-07, 0 failed requests, 0 breached thresholds; the setup, load and spread are in [benchmarks](../../docs/benchmarks.md). These supersede the single laptop runs in the first table for the final code (the first M1 run was depressed by load, which the benchmarks page documents).
+
+| Strategy | Contention | M1 Air RPS | M1 p99 ms | M4 Pro RPS | M4 Pro p99 ms |
+|---|---|---|---|---|---|
+| atomic-update | low (100k seats) | 3 624 | 23.4 | 10 679 | 7.1 |
+| atomic-update | hot (20 seats) | 4 207 | 20.3 | 12 095 | 6.0 |
+| for-update | low (100k seats) | 3 759 | 23.6 | 10 603 | 7.4 |
+| for-update | hot (20 seats) | 5 214 | 18.7 | 13 492 | 5.2 |
+
+On the M4 Pro the Docker VM (Postgres) averaged 325 to 398% of one core, k6 84 to 98% and the Node service 60 to 62%; 12 CPUs were available, so the machine was not saturated and the Node process was not at its core limit. The earlier "bottleneck: pool/CPU shared on one laptop" statement therefore holds for the runner and the M1 (not sampled for inventory) but is not what the M4 Pro sampling shows; where the M4 Pro time goes was not tested.
+
 ## Reading
 - Hot seats are *faster* per request: losers get an immediate 409 and no write happens. Throughput of **successful** holds is what drops, so measure both.
 - In the first single run `for-update` was slower at low contention (extra round trip); this did not reproduce on the final code or on the runner. At high contention the strategies are indistinguishable.

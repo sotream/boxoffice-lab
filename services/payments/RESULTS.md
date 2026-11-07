@@ -1,6 +1,6 @@
 # payments: measured results
 
-*Measurement status: these figures were measured on PostgreSQL 17, before `@boxoffice/platform` (metrics, JSON logging, trace context) existed and before the REFUNDING claim (ADR 005) added a commit to the compensation path that this run exercises. They have not been repeated; 561 and 904 payments/s are marked to-be-remeasured in [CAPACITY.md](CAPACITY.md). Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
+*Measurement status: these figures were measured on PostgreSQL 17, before `@boxoffice/platform` (metrics, JSON logging, trace context) existed and before the REFUNDING claim (ADR 005) added a commit to the compensation path that this run exercises. They were repeated on the final code on PostgreSQL 18; see the section [Re-measured on the final code](#re-measured-on-the-final-code-postgresql-18) below, which supersedes the table here. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
 
 Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5, Postgres 17 and Redpanda in Docker, pool 20, k6 100 VUs, 20 s. Every 5th payment is retried with the same key. Seats are not held, so every payment takes the **compensation path** (charge, failed confirm, refund): the longest saga path.
 
@@ -8,6 +8,21 @@ Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5, Postgres 17 and Redpanda 
 |---|---|---|---|---|
 | 100 ms (compensation path calls the PSP twice) | 561 | 208 | 219 | 325 |
 | 0 ms | 904 | 118 | 144 | 179 |
+
+## Re-measured on the final code (PostgreSQL 18)
+
+2026-11-07, MacBook Air M1 (AC power, other applications closed), commit `9b39358`, `BENCH_CPU=1 scripts/bench.sh payments 3`, Postgres 18, Redpanda, pool 20, k6 100 VUs for 20 s, compensation path (now 4 commits: insert, ->CHARGED, ->REFUNDING, ->REFUNDED), 0 failed requests, 0 breached thresholds. Median (min-max):
+
+| PSP latency | RPS | p95 ms | p99 ms |
+|---|---|---|---|
+| 100 ms | 536 (520-536) | 250.2 (244.5-287.8) | 301.5 (273.2-406.0) |
+| 0 ms | 959 (950-960) | 164.9 (160.8-168.7) | 223.9 (222.1-280.2) |
+
+The same scenario on an M4 Pro (commit `90b6a5a`, 3 runs): 475 RPS at 100 ms (p95 273.5 ms) and 2 151 RPS at 0 ms (p95 68.2 ms); the 100 ms row is limited by the PSP wait and does not rank the machines, see [benchmarks](../../docs/benchmarks.md#m4-pro-with-cpu-sampling-and-payments-on-two-machines).
+
+CPU during the runs (`ps`, percent of one core, mean with peak in brackets), M1: at PSP 0 ms the Docker VM (Postgres, Redpanda and Redis together) 341 (455), the payments Node process 83 (132), k6 15 (21); at PSP 100 ms the VM 219 (313), Node 56 (74), k6 10 (18). The database side of the VM is the largest consumer and Node is well under its one core, which is consistent with the earlier statement that the commits, not the application code, set the ceiling; the VM figure does not isolate Postgres from Redpanda and Redis, so that remains an inference.
+
+The integrity queries below were run on the PostgreSQL 17 data; this re-measurement checked failed requests and thresholds only.
 
 ## Integrity checks after the run (PSP 100 ms)
 - PSP 100 ms run: 9 407 payments rows, all REFUNDED (the compensation path), 0 duplicate idempotency keys (client retries returned the stored result). The script's outbox query failed on shell quoting in this run, so no outbox count was saved for it.

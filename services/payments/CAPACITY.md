@@ -11,9 +11,9 @@
 - Rule that falls out of this: **never hold a DB connection while waiting for the PSP.** The code opens a transaction only for the state change, so a pool of 20 serves 40+ in-flight payments.
 
 ## Database
-- **To be re-measured (ADR 005):** the compensation path now takes 4 commits (insert, ->CHARGED, ->REFUNDING, ->REFUNDED) instead of 3, so the two figures below, measured on the compensation path before the REFUNDING state, are stale for that path. The happy path (confirmed) is unchanged at 3 commits. No new number has been measured yet.
-- Measured before that change: **561 payments/s per instance with a realistic 100 ms PSP** (compensation path, pool 20); **904/s with the PSP removed**, which shows the database, not the PSP wait, is the ceiling (3 transactions per payment; the CPU breakdown in RESULTS.md was measured before the NestJS 12 / Fastify 5 upgrade and not repeated).
-- instances = ceil(400 / (561 x 0.6)) = **2** (with the 904 figure it would be 1, but that figure excludes the PSP latency we always have). The second instance also covers availability.
+- **To be re-measured (ADR 005):** the compensation path now takes 4 commits (insert, ->CHARGED, ->REFUNDING, ->REFUNDED) instead of 3, so the two figures below, measured on the compensation path before the REFUNDING state, are stale for that path. The happy path (confirmed) is unchanged at 3 commits. Re-measured on the final code: see below.
+- Re-measured on the final code (4 commits, PostgreSQL 18, M1 Air, quiet machine, 3 runs): **536 payments/s per instance with a realistic 100 ms PSP** (compensation path, pool 20, min-max 520-536); **959/s with the PSP removed** (4 x 959 = 3 836 commits/s), which is higher than the 3 x 904 = 2 712 of the old version because the machine was quiet and the code changed, so the two are not comparable one to one. Measured before that change: 561 and 904 (3 commits). which shows the database, not the PSP wait, is the ceiling (3 transactions per payment; the CPU breakdown in RESULTS.md was measured before the NestJS 12 / Fastify 5 upgrade and not repeated).
+- instances = ceil(400 / (536 x 0.6)) = **2** (the old 561 gave the same 2; with the 959 figure it would be 1, but that figure excludes the PSP latency we always have). The second instance also covers availability.
 - Write load = 400 x 3 commits = **~1 200 TPS** on the happy path (up to 400 x 4 = ~1 600 TPS if every payment compensates; not measured). One primary is enough; scaling beyond means batching state transitions (fewer commits per payment) before sharding.
 
 ## Storage
