@@ -53,15 +53,24 @@ export class NetProxy {
   private makePipe(to: () => net.Socket | undefined, count: (n: number) => void): Pipe {
     const held: Buffer[] = [];
     let chain: Promise<void> = Promise.resolve();
+    let queued = 0; // chunks that went through the delayed chain and are not delivered yet: a direct write must not overtake them
     const deliver = (chunk: Buffer) => { const s = to(); if (s && !s.destroyed) { count(chunk.length); s.write(chunk); } };
+    const viaChain = (chunk: Buffer, ms: number) => {
+      queued++;
+      chain = chain.then(() => new Promise<void>((r) => setTimeout(() => { deliver(chunk); queued--; r(); }, ms)));
+    };
     const pipe: Pipe = {
       write: (chunk) => {
         if (this.mode.kind === "blackhole") { held.push(chunk); return; }
         const ms = this.mode.kind === "latency" ? this.mode.ms : 0;
-        if (ms === 0 && held.length === 0) { deliver(chunk); return; }
-        chain = chain.then(() => new Promise<void>((r) => setTimeout(() => { deliver(chunk); r(); }, ms)));
+        if (ms === 0 && queued === 0) deliver(chunk); else viaChain(chunk, ms);
       },
-      flush: () => { while (held.length) pipe.write(held.shift()!); }
+      // Everything that was held goes out before anything newer, in the order it arrived.
+      flush: () => {
+        const ms = this.mode.kind === "latency" ? this.mode.ms : 0;
+        const backlog = held.splice(0);
+        for (const c of backlog) viaChain(c, ms);
+      }
     };
     return pipe;
   }

@@ -60,6 +60,22 @@ describe("NetProxy", () => {
     s.destroy(); late.destroy();
   });
 
+  it("a long held backlog is delivered strictly in order, also when new data arrives while it is being released", async () => {
+    proxy.set({ kind: "pass" });
+    const s = await connect();
+    s.write("0"); expect(await next(s)).toBe("0");
+    proxy.set({ kind: "blackhole" });
+    const expected = Array.from({ length: 60 }, (_, i) => String.fromCharCode(65 + (i % 26)) + i).join("|") + "|";
+    for (const part of expected.split("|").filter(Boolean)) s.write(part + "|");
+    await new Promise((r) => setTimeout(r, 100));
+    proxy.set({ kind: "pass" });
+    s.write("END");                                           // newer data right behind the release must not overtake the backlog
+    let got = "";
+    while (!got.endsWith("END")) got += await next(s);
+    expect(got).toBe(expected + "END");
+    s.destroy();
+  });
+
   it("reset destroys open connections and new ones on arrival, and pass restores service", async () => {
     proxy.set({ kind: "pass" });
     const s = await connect();
