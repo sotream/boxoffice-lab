@@ -1,11 +1,13 @@
 import { createServer, Server } from "node:http";
 import { join } from "node:path";
 import { Kafka } from "kafkajs";
+import { Pool } from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createScratchDatabase, ensureBuilt, freePort, RunningService, spawnService, waitHealthy } from "@boxoffice/platform";
 
 const pkg = join(__dirname, "..");
 const BROKER = "localhost:59092";
+const TOKEN = "ops-e2e-internal-token";
 // The spawned service runs a sweeper and an outbox relay over the whole database, so it gets a private database:
 // otherwise it would resume and publish rows that other tests in the shared lab database are asserting on.
 let scratch: Awaited<ReturnType<typeof createScratchDatabase>>;
@@ -30,14 +32,14 @@ afterAll(async () => { inventory.close(); await scratch.drop(); });
 
 const start = async (env: Record<string, string> = {}) => {
   const port = await freePort();
-  const svc = spawnService(pkg, { PORT: String(port), INVENTORY_URL: `http://127.0.0.1:${inventoryPort}`, KAFKA_BROKER: BROKER, DATABASE_URL: scratch.url, ...env });
+  const svc = spawnService(pkg, { PORT: String(port), INVENTORY_URL: `http://127.0.0.1:${inventoryPort}`, KAFKA_BROKER: BROKER, DATABASE_URL: scratch.url, PAYMENTS_INTERNAL_TOKEN: TOKEN, SEAT_PRICE_CENTS: "1000", ...env });
   live.push(svc);
   const base = `http://127.0.0.1:${port}`;
   await waitHealthy(base);
   return { svc, base };
 };
 const pay = (base: string, key: string, headers: Record<string, string> = {}) =>
-  fetch(`${base}/payments`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key, ...headers }, body: JSON.stringify({ eventId: 987002, userId: "ops-e2e", seatIds: [1], amountCents: 1000 }) });
+  fetch(`${base}/payments`, { method: "POST", headers: { "content-type": "application/json", "idempotency-key": key, "x-internal-token": TOKEN, ...headers }, body: JSON.stringify({ eventId: 987002, userId: "ops-e2e", seatIds: [1], amountCents: 1000 }) });
 
 describe("payments process", () => {
   it("healthz/readyz/metrics; one request id follows the purchase into inventory and into the Kafka headers", async () => {
@@ -88,6 +90,66 @@ describe("payments process", () => {
     expect((await pay(base, key)).status).toBe(202);
     const text = await (await fetch(`${base}/metrics`)).text();
     expect(text).toMatch(/payments_in_progress_total\{service="payments"\} 1/);
+  }, 30_000);
+
+  it("internal authentication, server-side price and key scoping on the running service", async () => {
+    const { base } = await start({ PSP_ADMIN: "1" });
+    const db = new Pool({ connectionString: scratch.url, max: 1 });
+    try {
+      const rowsFor = async (key: string) => (await db.query("SELECT user_id, amount_cents FROM payments.payments WHERE idempotency_key=$1", [key])).rows;
+      const post = (path: string, headers: Record<string, string>, body: string) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
+      const good = JSON.stringify({ eventId: 987002, userId: "ops-e2e", seatIds: [1, 2] });
+      const key = `ops-e2e-auth-${Date.now()}`;
+
+      // 401 without or with a wrong token, before the body is looked at and before any row is written
+      expect((await post("/payments", { "idempotency-key": key }, good)).status).toBe(401);
+      expect((await post("/payments", { "idempotency-key": key, "x-internal-token": "wrong" }, good)).status).toBe(401);
+      expect((await post("/payments", { "idempotency-key": key }, "{not json")).status).toBe(401);
+      expect((await post("/payments", {}, "{}")).status).toBe(401); // not even the missing key (400) is reported to an unauthenticated caller
+      expect(await rowsFor(key)).toEqual([]);
+
+      // probes stay open; the admin endpoint needs the token as well
+      for (const p of ["/healthz", "/readyz", "/metrics"]) expect((await fetch(`${base}${p}`)).status, p).toBe(200);
+      expect((await post("/admin/psp", {}, '{"latencyMs":5}')).status).toBe(401);
+      const admin = await post("/admin/psp", { "x-internal-token": TOKEN }, '{"latencyMs":5}');
+      expect(admin.status).toBe(201);
+      expect(await admin.json()).toEqual({ ok: true, latencyMs: 5 });
+
+      // a tampered amount is a 400 and nothing is charged; no amount at all is priced by the server (2 seats x 1000)
+      const auth = { "idempotency-key": key, "x-internal-token": TOKEN };
+      expect((await post("/payments", auth, JSON.stringify({ ...JSON.parse(good), amountCents: 1 }))).status).toBe(400);
+      expect(await rowsFor(key)).toEqual([]);
+      const ok = await post("/payments", auth, good);
+      expect(ok.status).toBe(200);
+      const first = await ok.json();
+      expect(first.status).toBe("CONFIRMED");
+      expect(await rowsFor(key)).toEqual([{ user_id: "ops-e2e", amount_cents: 2000 }]);
+
+      // the same key and request again: the stored result; another user with that key: 409 without the payment's data
+      const again = await post("/payments", auth, good);
+      expect(again.status).toBe(200);
+      expect(await again.json()).toEqual(first);
+      const stolen = await post("/payments", auth, JSON.stringify({ eventId: 987002, userId: "mallory", seatIds: [1, 2] }));
+      expect(stolen.status).toBe(409);
+      const stolenBody = await stolen.text();
+      expect(stolenBody).toContain("idempotency key reused with a different request");
+      expect(stolenBody).not.toContain(String(first.paymentId) + '"');
+      expect(stolenBody).not.toContain("CONFIRMED");
+      expect(await rowsFor(key)).toEqual([{ user_id: "ops-e2e", amount_cents: 2000 }]);
+    } finally { await db.end(); }
+  }, 60_000);
+
+  it("refuses to boot with the development token in production and with a bad price", async () => {
+    for (const env of [{ NODE_ENV: "production" }, { NODE_ENV: "production", PAYMENTS_INTERNAL_TOKEN: "dev-internal-token" }]) {
+      const svc = spawnService(pkg, { DATABASE_URL: scratch.url, KAFKA_BROKER: BROKER, PORT: String(await freePort()), ...env, PAYMENTS_INTERNAL_TOKEN: (env as Record<string, string>).PAYMENTS_INTERNAL_TOKEN ?? "" });
+      live.push(svc);
+      expect((await svc.exited).code).toBe(78);
+      expect(svc.output()).toMatch(/PAYMENTS_INTERNAL_TOKEN (must be set when NODE_ENV=production|is set to a known development value)/);
+    }
+    const bad = spawnService(pkg, { DATABASE_URL: scratch.url, KAFKA_BROKER: BROKER, PORT: String(await freePort()), SEAT_PRICE_CENTS: "0" });
+    live.push(bad);
+    expect((await bad.exited).code).toBe(78);
+    expect(bad.output()).toMatch(/SEAT_PRICE_CENTS must be >= 1/);
   }, 30_000);
 
   it("SIGTERM during an in-flight payment: it completes, relay and sweeper stop, the process exits 0", async () => {

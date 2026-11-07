@@ -515,10 +515,11 @@
     "id": "gw-user-mismatch",
     "package": "@boxoffice/gateway",
     "file": "services/gateway/src/gateway.service.ts",
-    "find": "if (bodyUser !== who.userId)",
+    "find": "if (parsed?.userId !== who.userId)",
     "replace": "if (false)",
     "expectFailingTests": [
-      "cannot hold or confirm seats as somebody else"
+      "cannot hold or confirm seats as somebody else",
+      "cannot pay as somebody else"
     ],
     "description": "gateway forwards a body whose userId differs from the admission token"
   },
@@ -588,7 +589,7 @@
     "expectFailingTests": [
       "POST-only"
     ],
-    "description": "holds and confirms accept any method and skip the identity check"
+    "description": "holds, confirms and payments accept any method and skip the identity check"
   },
   {
     "id": "pay-int4-bound",
@@ -600,5 +601,87 @@
       "is a 400"
     ],
     "description": "ids beyond int4 pass validation and the card is charged before inventory fails"
+  },
+  {
+    "id": "pay-token-skip",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/internal-auth.ts",
+    "find": "if (!tokenMatches(req.headers[INTERNAL_TOKEN_HEADER], expected)) {",
+    "replace": "if (false) {",
+    "expectFailingTests": [
+      "never reaches the handler",
+      "internal authentication, server-side price"
+    ],
+    "description": "payments no longer checks x-internal-token: any caller on the network can charge"
+  },
+  {
+    "id": "pay-token-compare-open",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/internal-auth.ts",
+    "find": "return timingSafeEqual(a, b);",
+    "replace": "return a.length === b.length;",
+    "expectFailingTests": [
+      "accepts only the exact token",
+      "a wrong token"
+    ],
+    "description": "token comparison accepts any token (compares only the hash lengths)"
+  },
+  {
+    "id": "pay-price-trust",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.controller.ts",
+    "find": "if (b.amountCents !== undefined && b.amountCents !== amountCents) throw",
+    "replace": "if (false) throw",
+    "expectFailingTests": [
+      "rejects any other amountCents"
+    ],
+    "description": "a client-supplied amount that differs from seats x SEAT_PRICE_CENTS is no longer rejected"
+  },
+  {
+    "id": "pay-price-from-client",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.controller.ts",
+    "find": "const amountCents = b.seatIds.length * this.seatPriceCents;",
+    "replace": "const amountCents = b.amountCents ?? b.seatIds.length * this.seatPriceCents;",
+    "expectFailingTests": [
+      "charges seats x SEAT_PRICE_CENTS when the body carries no amount",
+      "the amount follows the number of seats"
+    ],
+    "description": "the client's amount is used (and trivially equals itself) instead of the server-side price"
+  },
+  {
+    "id": "pay-key-scope",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "if (!sameRequest(existing, req)) throw new IdempotencyKeyReused();",
+    "replace": "",
+    "expectFailingTests": [
+      "another user replaying a key",
+      "a different event or a different seat set"
+    ],
+    "description": "a replayed idempotency key of another user reads that user's payment instead of a 409"
+  },
+  {
+    "id": "gw-pay-event-binding",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "if (parsed.eventId !== undefined && parsed.eventId !== eventId) return",
+    "replace": "if (false) return",
+    "expectFailingTests": [
+      "the body eventId must be the path event"
+    ],
+    "description": "gateway forwards a payment whose body names a different event than the admission token and path"
+  },
+  {
+    "id": "gw-pay-token-header",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "\"x-internal-token\": this.cfg.internalToken",
+    "replace": "\"x-internal-token\": \"\"",
+    "expectFailingTests": [
+      "adds the internal credential",
+      "the internal token and the key reach payments"
+    ],
+    "description": "gateway does not send the internal credential to payments"
   }
 ]

@@ -6,6 +6,7 @@ Interview questions: **"How do you make payments safe to retry?"**, **"Saga vs 2
 - FR: pay for held seats with an `Idempotency-Key`; on success confirm the seats in inventory.
 - FR: if the hold expired by the time the money is taken, refund automatically (compensation).
 - FR: emit `payment.confirmed|refunded|failed` events for notifications.
+- FR: internal service: only the gateway calls it (route `POST /events/:id/pay`), with a shared secret; the price is computed here, never taken from the request ([ADR 006](adr/006-internal-authentication-and-server-side-price.md)).
 - NFR: never charge twice, never lose an event, survive a crash at any step.
 
 ## Saga (orchestrated by this service)
@@ -24,12 +25,18 @@ The correlation of the request that created the payment (`{requestId, traceparen
 See [CAPACITY.md](CAPACITY.md), [adr/](adr/), [RESULTS.md](RESULTS.md).
 
 ## Endpoints
-Port 3103.
+Port 3103. Internal: clients reach it through the gateway's `POST /events/:eventId/pay` ([gateway README](../gateway/README.md#endpoints)), which checks the admission token, rate-limits per user, binds the body user to the token and adds the credential below.
+
+**Authentication.** Every request except `/healthz`, `/readyz` and `/metrics` (including `POST /admin/psp`) must carry header `x-internal-token` equal to `PAYMENTS_INTERNAL_TOKEN`; otherwise 401 `{statusCode:401, error:"Unauthorized", message:"internal token required"}`. It is an `onRequest` hook (`src/internal-auth.ts`): it runs before the body is read, parsed or validated and before any database access, so a malformed body without the token is 401, not 400. The comparison hashes both values with SHA-256 and uses `timingSafeEqual`.
+
+**Price.** `amountCents = seatIds.length x SEAT_PRICE_CENTS`. The body may still carry `amountCents`; it must then equal the computed value (400 otherwise), so a tampered price is rejected before the card is touched and clients that send the right price keep working.
+
+**Idempotency scope.** The key is global, so a repeat is "the same request" only if user, event and seat set (order ignored) match the stored payment. Same key and same request: the stored result, as before. Same key and anything else: 409 `idempotency key reused with a different request`, with no data about the stored payment.
 
 | Method and path | Body or header | Answer |
 |---|---|---|
-| `POST /payments` | header `Idempotency-Key` (required), body `{eventId, userId, seatIds, amountCents}` | 200 `{status, paymentId, inProgress:false}` for a final state (`CONFIRMED`, `REFUNDED`, `FAILED`); 202 with `inProgress:true` while the saga is not final (`PENDING`, `CHARGED`, `REFUNDING`); 400 on a missing key or invalid body |
-| `POST /admin/psp` | `{latencyMs}` | only with `PSP_ADMIN=1`: sets the fake PSP latency (drills) |
+| `POST /payments` | headers `x-internal-token` and `Idempotency-Key` (both required), body `{eventId, userId, seatIds, amountCents?}` (`amountCents` optional, must equal `seatIds.length x SEAT_PRICE_CENTS`) | 200 `{status, paymentId, inProgress:false}` for a final state (`CONFIRMED`, `REFUNDED`, `FAILED`); 202 with `inProgress:true` while the saga is not final (`PENDING`, `CHARGED`, `REFUNDING`); 401 without a valid `x-internal-token`; 400 on a missing key, an invalid body (1 to 8 seat ids, int4 ids) or an `amountCents` that is not the computed price; 409 when the key belongs to a different user, event or seat set |
+| `POST /admin/psp` | header `x-internal-token`, body `{latencyMs}` | only with `PSP_ADMIN=1`: sets the fake PSP latency (drills); 401 without the token |
 | `GET /healthz`, `/readyz`, `/metrics` | | see Operations |
 
 ## Environment
@@ -46,6 +53,8 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 | `PSP_FAIL_RATE` | 0 | Share of declined charges, 0 to 1 |
 | `PSP_TIMEOUT_MS`, `CONFIRM_TIMEOUT_MS` | 2000, 2000 | Step timeouts; a timeout is an unknown outcome and answers 202 |
 | `PSP_ADMIN` | 0 | `1` enables `POST /admin/psp` |
+| `PAYMENTS_INTERNAL_TOKEN` | `dev-internal-token` | Shared secret the gateway sends in `x-internal-token`. With `NODE_ENV=production` it must be set and not the default, otherwise exit 78 |
+| `SEAT_PRICE_CENTS` | 5000 | Price of one seat in cents, an integer from 1 to 100 000 000 (8 seats must fit int4) |
 | `SAGA_RUNS` | 40 | Tests only: number of generated saga scenarios |
 | `SHUTDOWN_DEADLINE_MS` | 10000 | Total time for graceful shutdown, minimum 100 |
 | `SHUTDOWN_DRAIN_DELAY_MS` | 0 | Wait after going not-ready, so a load balancer notices |
@@ -60,4 +69,4 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 - Runbooks for the drills that hit this service: [operations.md](../../docs/operations.md#runbooks).
 
 ## Tests
-`docker compose up -d && pnpm --filter @boxoffice/payments test` (Postgres; Redpanda for `src/ops.e2e.test.ts`, which runs the built service against a private scratch database it creates and drops, because the sweeper and relay would otherwise act on rows of other tests) runs unit tests, deterministic race tests, a crash at every named boundary (`FaultHook`: before/after charge, confirm, refund, transition), a reusable PSP contract suite (`src/psp.contract.ts`, any adapter must pass it) and a fast-check model-based test (random crashes, confirm answers, PSP latency and failures, 1 to 4 concurrent runners; invariants: one terminal state and one event per payment, money conservation, at most one refund per charge). `SAGA_RUNS=300` raises the number of generated scenarios. The PSP contract is exercised against the fake PSP in `src/psp.contract.test.ts`; `src/trace.test.ts` checks the trace stored on the payment row. There are no coverage thresholds for this package yet; `scripts/mutation-check.mjs` refuses to mutate payments. The general testing guide, [testing](../../docs/testing.md), does not describe this package's suite.
+`docker compose up -d && pnpm --filter @boxoffice/payments test` (Postgres; Redpanda for `src/ops.e2e.test.ts`, which runs the built service against a private scratch database it creates and drops, because the sweeper and relay would otherwise act on rows of other tests) runs unit tests, deterministic race tests, a crash at every named boundary (`FaultHook`: before/after charge, confirm, refund, transition), a reusable PSP contract suite (`src/psp.contract.ts`, any adapter must pass it) and a fast-check model-based test (random crashes, confirm answers, PSP latency and failures, 1 to 4 concurrent runners; invariants: one terminal state and one event per payment, money conservation, at most one refund per charge). `SAGA_RUNS=300` raises the number of generated scenarios. The PSP contract is exercised against the fake PSP in `src/psp.contract.test.ts`; `src/trace.test.ts` checks the trace stored on the payment row; `src/internal-auth.test.ts` (token check, constant-time helper, 401 before body parsing, deny by default), `src/payments.controller.test.ts` (server-side price, key conflict as 409) and the key-scoping tests in `src/payments.test.ts`; `src/ops.e2e.test.ts` also runs the real process for 401/400/409 and the production refusals. There are no coverage thresholds for this package yet; The mutation runner covers the saga and the authentication, price and key-scoping rules (ids `pay-*`); it refuses `main.ts`, `db.ts` and `app.module.ts`, so the rules live in `internal-auth.ts`, the controller and the service. The general testing guide, [testing](../../docs/testing.md), does not describe this package's suite.

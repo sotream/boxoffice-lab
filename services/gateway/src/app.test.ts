@@ -25,3 +25,13 @@ describe("client IP used as the rate-limit key", () => {
     expect(seen).toEqual(["10.0.0.9"]);
   });
 });
+
+describe("headers handed to the service", () => {
+  it("passes the Idempotency-Key header (and only the first value of the admission header) to GatewayService.handle", async () => {
+    const got: (string | undefined)[][] = [];
+    const app = buildApp({ handle: async (_m, _p, _q, _b, _ip, admission, _fwd, key) => { got.push([admission, key]); return { status: 200, body: "{}" }; } });
+    await app.inject({ method: "POST", url: "/events/1/pay", headers: { "x-admission": "tok", "idempotency-key": "k-1", "content-type": "application/json" }, payload: "{}" });
+    await app.inject({ method: "POST", url: "/events/1/pay", headers: { "content-type": "application/json" }, payload: "{}" });
+    expect(got).toEqual([["tok", "k-1"], [undefined, undefined]]);
+  });
+});

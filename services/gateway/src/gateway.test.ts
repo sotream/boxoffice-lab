@@ -37,7 +37,7 @@ describe("GatewayService", () => {
   const upstream: Upstream = async (url) => { calls.push(url); return { status: 201, body: "{}" }; };
   const secret = "s";
   const make = () => new GatewayService(
-    { inventoryUrl: "http://inv", queueUrl: "http://q", secret },
+    { inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" },
     new RateLimiter(redis, 1000, 1000),
     new RateLimiter(redis, 1, 2),
     upstream
@@ -73,7 +73,7 @@ describe("GatewayService", () => {
   });
 
   it("a hanging or failing upstream becomes a 504, not a hung request", async () => {
-    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", secret },
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" },
       new RateLimiter(redis, 1000, 1000), new RateLimiter(redis, 1000, 1000), async () => { throw new Error("timeout"); });
     expect((await g.handle("GET", "/events/1/availability", "", undefined, "ip")).status).toBe(504);
   });
@@ -106,7 +106,7 @@ describe("GatewayService", () => {
 
   it("limiter store down and a malformed body: fail closed 503, the body is not even looked at", async () => {
     const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
-    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", secret }, broken, broken, upstream);
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" }, broken, broken, upstream);
     expect((await g.handle("POST", "/events/1/holds", "", "not json", "ip", signAdmission("u", 1, 60, secret))).status).toBe(503);
   });
 
@@ -122,9 +122,87 @@ describe("GatewayService", () => {
     expect((await g.handle("GET", "/events/1/holds", "", undefined, "ip")).status).toBe(403); // without a token the answer is still 403, not 405
   });
 
+  describe("POST /events/:id/pay", () => {
+    const pay = (g: GatewayService, user: string, body: string, key: string | null = "idem-1", event = 1, token = signAdmission(user, event, 60, secret)) =>
+      g.handle("POST", `/events/${event}/pay`, "", body, "ip", token, undefined, key ?? undefined);
+
+    it("an admitted user cannot pay as somebody else: 403, nothing forwarded", async () => {
+      const g = make();
+      let n = 0;
+      expect((await pay(g, `a${n++}`, '{"userId":"victim","seatIds":[1]}')).status).toBe(403);
+      expect((await pay(g, `a${n++}`, '{"seatIds":[1]}')).status).toBe(403); // no userId at all
+      expect((await pay(g, `a${n++}`, '{"userId":["a"]}')).status).toBe(403);
+      expect((await pay(g, `a${n++}`, "not json")).status).toBe(400);
+      expect(calls).toEqual([]);
+    });
+
+    it("the body eventId must be the path event: another event is a 400 and nothing is forwarded", async () => {
+      const g = make();
+      let n = 0;
+      for (const eventId of [2, "1", 0, null]) {
+        expect((await pay(g, `e${n++}`, JSON.stringify({ userId: `e${n - 1}`, eventId, seatIds: [1] }))).status, JSON.stringify(eventId)).toBe(400);
+      }
+      expect(calls).toEqual([]);
+      expect((await pay(g, "ok", '{"userId":"ok","eventId":1,"seatIds":[1]}')).status).toBe(201); // equal is fine
+      expect((await pay(g, "ok2", '{"userId":"ok2","seatIds":[1]}')).status).toBe(201); // absent is filled in from the path
+      expect(calls).toEqual(["http://pay/payments", "http://pay/payments"]);
+    });
+
+    it("the Idempotency-Key header is required (400)", async () => {
+      const g = make();
+      expect((await pay(g, "k1", '{"userId":"k1","seatIds":[1]}', null)).status).toBe(400);
+      expect((await pay(g, "k2", '{"userId":"k2","seatIds":[1]}', "  ")).status).toBe(400);
+      expect(calls).toEqual([]);
+    });
+
+    it("a token for another event is a 403 even with a perfect body", async () => {
+      const g = make();
+      expect((await pay(g, "u", '{"userId":"u","seatIds":[1]}', "idem", 1, signAdmission("u", 2, 60, secret))).status).toBe(403);
+      expect(calls).toEqual([]);
+    });
+
+    it("order of checks: token 403, then limiter 429, then body 400/403; the bucket is per user and spent by bad bodies", async () => {
+      const g = make(); // user bucket: burst 2
+      const t = signAdmission("u", 1, 60, secret);
+      const codes = [];
+      for (const b of ["not json", '{"userId":"victim"}', '{"userId":"u","seatIds":[1]}']) codes.push((await pay(g, "u", b, "idem", 1, t)).status);
+      expect(codes).toEqual([400, 403, 429]);
+      expect(calls).toEqual([]);
+    });
+
+    it("limiter store down: pay fails closed with a fast 503, the body is not looked at", async () => {
+      const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
+      const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" }, broken, broken, upstream);
+      const r = await pay(g, "u", "not json");
+      expect(r.status).toBe(503);
+      expect(r.headers?.["retry-after"]).toBe("1");
+    });
+
+    it("only POST: any other method with a valid token is 405, and without a token it is 403", async () => {
+      const g = make();
+      const t = signAdmission("u", 1, 60, secret);
+      for (const method of ["GET", "PUT", "PATCH", "DELETE"]) {
+        const r = await g.handle(method, "/events/1/pay", "", '{"userId":"u"}', "ip", t, undefined, "idem");
+        expect(r.status, method).toBe(405);
+        expect(r.headers?.allow).toBe("POST");
+      }
+      expect((await g.handle("GET", "/events/1/pay", "", undefined, "ip")).status).toBe(403);
+      expect(calls).toEqual([]);
+    });
+
+    it("the internal token and the key reach payments; a client cannot supply its own token", async () => {
+      const seen: Record<string, string>[] = [];
+      const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" },
+        new RateLimiter(redis, 1000, 1000), new RateLimiter(redis, 1000, 1000), async (_url, init) => { seen.push(init.headers); return { status: 200, body: "{}" }; });
+      await pay(g, "u", '{"userId":"u","seatIds":[1]}', "key-9");
+      expect(seen[0]["x-internal-token"]).toBe("internal");
+      expect(seen[0]["idempotency-key"]).toBe("key-9");
+    });
+  });
+
   it("limiter store down: public availability fails open, holds fail closed with a fast 503", async () => {
     const broken = { take: async () => { throw new Error("redis down"); } } as unknown as RateLimiter;
-    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", secret }, broken, broken, upstream);
+    const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" }, broken, broken, upstream);
     expect((await g.handle("GET", "/events/1/availability", "", undefined, "ip")).status).toBe(201); // forwarded
     const t = signAdmission("u", 1, 60, secret);
     expect((await g.handle("POST", "/events/1/holds", "", '{"userId":"u"}', "ip", t)).status).toBe(503);

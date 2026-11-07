@@ -22,7 +22,7 @@ export function buildApp(svc: Pick<GatewayService, "handle">, trustedProxies: st
     const xff = req.headers["x-forwarded-for"];
     // req.ip differs from the peer only when the peer is a trusted proxy that sent a chain.
     const forwardedFor = req.ip !== peer && xff ? `${Array.isArray(xff) ? xff.join(", ") : xff}, ${peer}` : peer;
-    const r = await svc.handle(req.method, path, qs ? `?${qs}` : "", req.body as string | undefined, req.ip, req.headers["x-admission"] as string | undefined, forwardedFor);
+    const r = await svc.handle(req.method, path, qs ? `?${qs}` : "", req.body as string | undefined, req.ip, req.headers["x-admission"] as string | undefined, forwardedFor, req.headers["idempotency-key"] as string | undefined);
     reply.status(r.status).headers({ "content-type": "application/json", ...r.headers }).send(r.body);
   });
   return app;

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createPool, migrate } from "./db";
 import { OutboxRelay } from "./outbox-relay";
-import { FaultHook, FaultPoint, PaymentsService, PaymentRequest, StepTimeout } from "./payments.service";
+import { FaultHook, FaultPoint, IdempotencyKeyReused, PaymentsService, PaymentRequest, StepTimeout } from "./payments.service";
 import { FakePsp } from "./psp";
 import { registerRaceTests } from "./saga.races";
 import { registerPropertyTests } from "./saga.property";
@@ -71,6 +71,46 @@ describe("payments saga", () => {
     await expect(svc.pay(req("k6"))).rejects.toThrow("crash");
     await svc.resume(1); await svc.resume(1);
     expect(await outbox()).toEqual(["payment.confirmed"]);
+  });
+});
+
+describe("idempotency key scoping", () => {
+  const rows = async () => (await pool.query("SELECT user_id, event_id, seat_ids, status FROM payments.payments ORDER BY id")).rows;
+
+  it("the same key with the same request returns the stored result, as before", async () => {
+    const psp = new FakePsp();
+    const svc = new PaymentsService(pool, psp, async () => true);
+    const first = await svc.pay(req("same-req"));
+    const again = await svc.pay(req("same-req"));
+    expect(again).toEqual(first);
+    expect(again.payment.status).toBe("CONFIRMED");
+    expect(psp.chargeCalls).toBe(1);
+  });
+
+  it("the same seats in another order are the same request", async () => {
+    const svc = new PaymentsService(pool, new FakePsp(), async () => true);
+    const first = await svc.pay(req("order", { seatIds: [1, 2, 3] }));
+    expect(await svc.pay(req("order", { seatIds: [3, 1, 2] }))).toEqual(first);
+  });
+
+  it("another user replaying a key gets IdempotencyKeyReused, never the stored status, and nothing is charged or written", async () => {
+    const psp = new FakePsp();
+    const svc = new PaymentsService(pool, psp, async () => true);
+    await svc.pay(req("victim-key", { userId: "victim" }));
+    const before = await rows();
+    await expect(svc.pay(req("victim-key", { userId: "mallory" }))).rejects.toBeInstanceOf(IdempotencyKeyReused);
+    expect(psp.chargeCalls).toBe(1);
+    expect(await rows()).toEqual(before);
+    expect(await outbox()).toEqual(["payment.confirmed"]);
+  });
+
+  it("a different event or a different seat set under the same key is refused too, also while the saga is in progress", async () => {
+    const svc = new PaymentsService(pool, new FakePsp(), async () => true, 2000, crashOnce("after-charge"));
+    await expect(svc.pay(req("k-open"))).rejects.toThrow("crash"); // row exists, still PENDING
+    for (const over of [{ eventId: 2 }, { seatIds: [1, 3] }, { seatIds: [1] }, { seatIds: [1, 2, 3] }, { userId: "u2" }]) {
+      await expect(svc.pay(req("k-open", over)), JSON.stringify(over)).rejects.toBeInstanceOf(IdempotencyKeyReused);
+    }
+    expect((await rows())[0].status).toBe("PENDING");
   });
 });
 

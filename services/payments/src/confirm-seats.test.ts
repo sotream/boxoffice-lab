@@ -36,9 +36,9 @@ describe("confirmSeatsOverHttp: what each inventory answer means for the saga", 
 });
 
 describe("payments controller rejects bad seat lists before any charge", () => {
-  const ctrl = new PaymentsController({ pay: async () => { throw new Error("must not be reached"); } } as never);
+  const ctrl = new PaymentsController({ pay: async () => { throw new Error("must not be reached"); } } as never, 100); // priced by the server, so only the id rules can reject the bodies below
   const res = { status: () => undefined };
-  const body = (seatIds: unknown) => ({ eventId: 1, userId: "u", seatIds: seatIds as number[], amountCents: 100 });
+  const body = (seatIds: unknown) => ({ eventId: 1, userId: "u", seatIds: seatIds as number[] }); // no amount: the price check must not be what rejects these
   it.each([[[]], [[1, 2, 3, 4, 5, 6, 7, 8, 9]], [[0]], [[-1]], [[1.5]], [["1"]], ["1,2"], [[3_000_000_000]], [[2_147_483_648]]])("%j is a 400", async (ids) => {
     await expect(ctrl.pay("k", body(ids), res)).rejects.toBeInstanceOf(BadRequestException);
   });

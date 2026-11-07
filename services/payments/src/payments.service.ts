@@ -8,7 +8,15 @@ export class StepTimeout extends Error {}
 export type ConfirmSeats = (eventId: number, seatIds: number[], userId: string) => Promise<boolean>;
 export interface PaymentRequest { idempotencyKey: string; eventId: number; userId: string; seatIds: number[]; amountCents: number }
 export type PaymentView = { id: number; status: string };
+/** The idempotency key exists, but for a different user, event or seat set. Nothing about the stored payment is revealed. */
+export class IdempotencyKeyReused extends Error {
+  constructor() { super("idempotency key reused with a different request"); }
+}
 interface PaymentRow { id: number; idempotency_key: string; event_id: number; user_id: string; seat_ids: number[]; amount_cents: number; status: string; trace?: { requestId: string; traceparent: string } | null }
+const sortedSeats = (xs: number[]) => [...xs].sort((a, b) => a - b).join(",");
+/** Same purchase: same user, same event, same set of seats (order does not matter). The amount follows from the seats. */
+const sameRequest = (row: { user_id: string; event_id: number; seat_ids: number[] }, req: PaymentRequest) =>
+  row.user_id === req.userId && row.event_id === req.eventId && sortedSeats(row.seat_ids) === sortedSeats(req.seatIds);
 /** Named step boundaries at which a fault can be injected (tests only; production passes no hook). */
 export type FaultPoint =
   | "before-charge" | "after-charge"
@@ -61,8 +69,10 @@ export class PaymentsService {
       [req.idempotencyKey, req.eventId, req.userId, req.seatIds, req.amountCents, JSON.stringify(traceFields() ?? null)]
     );
     if (ins.rowCount === 0) {
-      // Same key seen before: return the stored result, never charge again.
-      const existing = (await this.pool.query("SELECT id, status FROM payments.payments WHERE idempotency_key=$1", [req.idempotencyKey])).rows[0];
+      // Same key seen before: return the stored result, never charge again. The key is global, so it only identifies
+      // "the same request" if user, event and seats match too; otherwise another caller replaying a key would read this payment.
+      const existing = (await this.pool.query("SELECT id, status, user_id, event_id, seat_ids FROM payments.payments WHERE idempotency_key=$1", [req.idempotencyKey])).rows[0];
+      if (!sameRequest(existing, req)) throw new IdempotencyKeyReused();
       const view = { id: Number(existing.id), status: existing.status as string };
       return this.isFinal(view.status) ? { kind: "done", payment: view } : { kind: "in-progress", payment: view };
     }

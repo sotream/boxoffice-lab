@@ -1,7 +1,7 @@
 import { Body, Controller, Module, Post } from "@nestjs/common";
 import { registerPoolMetrics } from "@boxoffice/platform";
 import { createPool } from "./db";
-import { PaymentsController } from "./payments.controller";
+import { PaymentsController, SEAT_PRICE_CENTS } from "./payments.controller";
 import { PaymentsService } from "./payments.service";
 import { confirmSeatsOverHttp } from "./confirm-seats";
 import { FakePsp } from "./psp";
@@ -24,7 +24,7 @@ class AdminController {
 
 @Module({
   controllers: [PaymentsController, AdminController],
-  providers: [{
+  providers: [{ provide: SEAT_PRICE_CENTS, useFactory: () => Number(process.env.SEAT_PRICE_CENTS ?? 5000) }, {
     provide: PaymentsService,
     useFactory: () => new PaymentsService(pool, psp, confirmSeatsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000)), Number(process.env.PSP_TIMEOUT_MS ?? 2000))
   }]

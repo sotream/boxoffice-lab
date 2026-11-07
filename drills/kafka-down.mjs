@@ -14,8 +14,8 @@ console.log("redpanda STOPPED; sending 300 payments");
 let ok = 0, fail = 0; const t0 = Date.now();
 await Promise.all(Array.from({ length: 300 }, async (_, i) => {
   try {
-    const r = await fetch("http://localhost:3103/payments", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": `drill-${Date.now()}-${i}` },
-      body: JSON.stringify({ eventId: 1, userId: `d${i}`, seatIds: [900000 + i], amountCents: 100 }), signal: AbortSignal.timeout(10000) });
+    const r = await fetch("http://localhost:3103/payments", { method: "POST", headers: { "content-type": "application/json", "idempotency-key": `drill-${Date.now()}-${i}`, "x-internal-token": process.env.PAYMENTS_INTERNAL_TOKEN ?? "dev-internal-token" },
+      body: JSON.stringify({ eventId: 1, userId: `d${i}`, seatIds: [900000 + i] }), signal: AbortSignal.timeout(10000) });
     r.status === 200 ? ok++ : fail++;
   } catch { fail++; }
 }));

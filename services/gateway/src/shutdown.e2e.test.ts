@@ -61,12 +61,21 @@ describe("gateway process", () => {
   }, 30_000);
 
   it("refuses to boot with the default secret in production and reports every bad variable", async () => {
-    const svc = spawnService(pkg, { NODE_ENV: "production", PORT: "abc", IP_RATE: "fast" });
+    const svc = spawnService(pkg, { NODE_ENV: "production", PORT: "abc", IP_RATE: "fast", PAYMENTS_URL: "nope" });
     live.push(svc);
     const exit = await svc.exited;
     expect(exit.code).toBe(78);
     expect(svc.output()).toMatch(/PORT must be an integer/);
     expect(svc.output()).toMatch(/IP_RATE must be a number/);
     expect(svc.output()).toMatch(/ADMISSION_SECRET must be set when NODE_ENV=production/);
+    expect(svc.output()).toMatch(/PAYMENTS_INTERNAL_TOKEN must be set when NODE_ENV=production/);
+    expect(svc.output()).toMatch(/PAYMENTS_URL must be a URL/);
+  }, 30_000);
+
+  it("refuses the development internal token in production", async () => {
+    const svc = spawnService(pkg, { NODE_ENV: "production", ADMISSION_SECRET: "a-real-secret", PAYMENTS_INTERNAL_TOKEN: "dev-internal-token" });
+    live.push(svc);
+    expect((await svc.exited).code).toBe(78);
+    expect(svc.output()).toMatch(/PAYMENTS_INTERNAL_TOKEN is set to a known development value/);
   }, 30_000);
 });

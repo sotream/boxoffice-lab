@@ -12,10 +12,11 @@ import { RateLimiter } from "./rate-limiter";
 const SECRET = "policy-secret";
 const EVENT = 7;
 type LimiterState = "ok" | "limited" | "down";
-type Route = "queue/join" | "queue/status" | "holds" | "confirm" | "availability";
+type Route = "queue/join" | "queue/status" | "holds" | "confirm" | "pay" | "availability";
 type TokenState = "none" | "garbage" | "valid" | "expired" | "wrong-event" | "wrong-secret";
 
-const ROUTES: Route[] = ["queue/join", "queue/status", "holds", "confirm", "availability"];
+const ROUTES: Route[] = ["queue/join", "queue/status", "holds", "confirm", "pay", "availability"];
+const INTERNAL = "policy-internal-token";
 const TOKENS: TokenState[] = ["none", "garbage", "valid", "expired", "wrong-event", "wrong-secret"];
 const LIMITERS: LimiterState[] = ["ok", "limited", "down"];
 
@@ -46,7 +47,7 @@ function build(limiter: LimiterState, upstream?: Upstream) {
   const up: Upstream = upstream ?? (async (url, init) => { calls.push({ url, init }); return { status: 202, body: '{"up":true}' }; });
   const wrapped: Upstream = async (url, init) => { if (!upstream) return up(url, init); calls.push({ url, init }); return upstream(url, init); };
   const svc = new GatewayService(
-    { inventoryUrl: "http://inv", queueUrl: "http://q", secret: SECRET },
+    { inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret: SECRET, internalToken: INTERNAL },
     fakeLimiter(limiter, limits, "ip"),
     fakeLimiter(limiter, limits, "user"),
     wrapped
@@ -64,7 +65,7 @@ function expected(route: Route, t: TokenState, l: LimiterState): { status: numbe
     if (l === "down") return route === "availability" ? { status: 202, limiter: "ip:ip:9.9.9.9", upstream: true } : { status: 503, limiter: "ip:ip:9.9.9.9", upstream: false };
     return { status: 202, limiter: "ip:ip:9.9.9.9", upstream: true };
   }
-  // holds and confirm: a valid admission token is checked BEFORE the limiter is touched
+  // holds, confirm and pay: a valid admission token is checked BEFORE the limiter is touched
   if (t !== "valid") return { status: 403, upstream: false };
   if (l === "limited") return { status: 429, limiter: "user:user:alice", upstream: false };
   if (l === "down") return { status: 503, limiter: "user:user:alice", upstream: false };
@@ -75,15 +76,16 @@ describe("every (route x token x limiter) combination gives the documented statu
   for (const route of ROUTES) for (const t of TOKENS) for (const l of LIMITERS) {
     it(`${route} | token ${t} | limiter ${l}`, async () => {
       const { svc, limits, calls } = build(l);
-      const method = route === "holds" || route === "confirm" || route === "queue/join" ? "POST" : "GET";
-      const r = await svc.handle(method, `/events/${EVENT}/${route}`, "?x=1", method === "POST" ? '{"userId":"alice"}' : undefined, "9.9.9.9", token(t));
+      const method = route === "holds" || route === "confirm" || route === "pay" || route === "queue/join" ? "POST" : "GET";
+      const r = await svc.handle(method, `/events/${EVENT}/${route}`, "?x=1", method === "POST" ? '{"userId":"alice"}' : undefined, "9.9.9.9", token(t), undefined, "idem-1");
       const want = expected(route, t, l);
       expect(r.status).toBe(want.status);
       expect(limits).toEqual(want.limiter ? [want.limiter] : []); // 403 never spends limiter capacity
       expect(calls.length).toBe(want.upstream ? 1 : 0);
       if (want.upstream) {
         const host = route.startsWith("queue/") ? "http://q" : "http://inv";
-        expect(calls[0].url).toBe(`${host}/events/${EVENT}/${route}?x=1`);
+        // payments is a different path on the upstream (/payments) and the query string is not forwarded
+        expect(calls[0].url).toBe(route === "pay" ? "http://pay/payments" : `${host}/events/${EVENT}/${route}?x=1`);
         expect(calls[0].init.headers["x-forwarded-for"]).toBe("9.9.9.9");
         expect(calls[0].init.method).toBe(method);
         expect(r.body).toBe('{"up":true}');
@@ -94,16 +96,37 @@ describe("every (route x token x limiter) combination gives the documented statu
   }
 });
 
+describe("pay: what is sent to payments", () => {
+  it("adds the internal credential, passes the idempotency key and fills in the event from the path", async () => {
+    const { svc, calls } = build("ok");
+    const r = await svc.handle("POST", `/events/${EVENT}/pay`, "?ignored=1", '{"userId":"alice","seatIds":[3,4]}', "9.9.9.9", token("valid"), undefined, "idem-77");
+    expect(r.status).toBe(202);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url).toBe("http://pay/payments");
+    expect(calls[0].init.headers["x-internal-token"]).toBe(INTERNAL);
+    expect(calls[0].init.headers["idempotency-key"]).toBe("idem-77");
+    expect(JSON.parse(calls[0].init.body!)).toEqual({ userId: "alice", seatIds: [3, 4], eventId: EVENT });
+  });
+  it("holds and confirms never get the internal credential or an idempotency key", async () => {
+    for (const route of ["holds", "confirm"]) {
+      const { svc, calls } = build("ok");
+      await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"), undefined, "idem-1");
+      expect(calls[0].init.headers["x-internal-token"]).toBeUndefined();
+      expect(calls[0].init.headers["idempotency-key"]).toBeUndefined();
+    }
+  });
+});
+
 describe("upstream failures", () => {
   for (const route of ROUTES) {
     it(`${route}: an unreachable or slow upstream becomes 504 with the limiter ok`, async () => {
       const { svc } = build("ok", async () => { throw new Error("ETIMEDOUT"); });
-      const r = await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"));
+      const r = await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"), undefined, "idem-1");
       expect(r.status).toBe(504);
     });
     it(`${route}: upstream error statuses and bodies are passed through unchanged`, async () => {
       const { svc } = build("ok", async () => ({ status: 409, body: '{"reason":"unavailable"}' }));
-      const r = await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"));
+      const r = await svc.handle("POST", `/events/${EVENT}/${route}`, "", '{"userId":"alice"}', "ip", token("valid"), undefined, "idem-1");
       expect(r).toMatchObject({ status: 409, body: '{"reason":"unavailable"}' });
     });
   }
@@ -147,7 +170,7 @@ describe("routing and fuzz", () => {
       fc.asyncProperty(fc.string({ maxLength: 300 }), fc.uint8Array({ maxLength: 100 }), async (garbage, bytes) => {
         const { svc, limits, calls } = build("ok");
         for (const adm of [garbage, Buffer.from(bytes).toString("latin1"), Buffer.from(bytes).toString("hex")]) {
-          for (const route of ["holds", "confirm"]) {
+          for (const route of ["holds", "confirm", "pay"]) {
             expect((await svc.handle("POST", `/events/${EVENT}/${route}`, "", "{}", "ip", adm)).status).toBe(403);
           }
         }
