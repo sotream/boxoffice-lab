@@ -81,6 +81,31 @@ describe("migrate tracking", () => {
     await p.query("DELETE FROM public.schema_migrations WHERE scope=$1", [scope]);
   });
 
+  it("editing a file that was already applied is an error, and a record from before checksums is backfilled", async () => {
+    const scope = `unit-${Date.now()}-sum`;
+    const dir = dirWith({ "001.sql": "SELECT 1;" });
+    const p = mk({ max: 2 });
+    try {
+      await migrate(p, dir, scope);
+      await p.query("UPDATE public.schema_migrations SET checksum=NULL WHERE scope=$1", [scope]); // what an earlier version of migrate left behind
+      await migrate(p, dir, scope);
+      expect((await p.query("SELECT checksum FROM public.schema_migrations WHERE scope=$1", [scope])).rows[0].checksum).toMatch(/^[0-9a-f]{64}$/);
+      writeFileSync(join(dir, "001.sql"), "SELECT 2;");
+      await expect(migrate(p, dir, scope)).rejects.toThrow(/changed after it was applied/);
+    } finally { await p.query("DELETE FROM public.schema_migrations WHERE scope=$1", [scope]); }
+  });
+
+  it("a connection whose advisory lock could not be released is destroyed, not returned to the pool", async () => {
+    const released: unknown[] = [];
+    const client = {
+      query: async (sql: string) => { if (/pg_advisory_unlock/.test(sql)) throw new Error("connection lost"); return { rows: [], rowCount: 0 }; },
+      release: (err?: unknown) => { released.push(err); }
+    };
+    await migrate({ connect: async () => client } as never, dirWith({}), "unit-unlock");
+    expect(released).toHaveLength(1);
+    expect(released[0]).toBeInstanceOf(Error);
+  });
+
   it("instances booting at the same time do not race (advisory lock)", async () => {
     const scope = `unit-${Date.now()}-race`;
     const table = `mig_race_${Date.now()}`;
