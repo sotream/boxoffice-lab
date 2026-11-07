@@ -1,5 +1,5 @@
 import { outgoingHeaders } from "@boxoffice/platform";
-import { ConfirmSeats, StepTimeout } from "./payments.service";
+import { ConfirmSeats, StepTimeout, VerifyHolds } from "./payments.service";
 
 /**
  * Confirm seats at inventory over HTTP and map the answer to what the saga needs:
@@ -24,5 +24,28 @@ export function confirmSeatsOverHttp(inventoryUrl: string, timeoutMs: number): C
     if (res.ok) return true;
     if (res.status === 409) return false;
     throw new Error(`inventory rejected the confirm request with ${res.status}`);
+  };
+}
+
+/**
+ * The pre-charge question to inventory ("does this user hold these seats now?"), mapped like confirm: 2xx true, 409 false (the one
+ * answer that stops the payment before any money moves), 5xx / timeout / unreachable StepTimeout (unknown: the payment stays PENDING
+ * and the sweeper goes on without the pre-check, confirm remains the authority), any other 4xx a plain Error (a contract bug).
+ */
+export function verifyHoldsOverHttp(inventoryUrl: string, timeoutMs: number): VerifyHolds {
+  return async (eventId, seatIds, userId) => {
+    let res: Response;
+    try {
+      res = await fetch(`${inventoryUrl}/events/${eventId}/holds/verify`, {
+        method: "POST", headers: { "content-type": "application/json", ...outgoingHeaders() }, body: JSON.stringify({ seatIds, userId }),
+        signal: AbortSignal.timeout(timeoutMs)
+      });
+    } catch {
+      throw new StepTimeout("inventory unreachable or timed out");
+    }
+    if (res.status >= 500) throw new StepTimeout(`inventory ${res.status}`);
+    if (res.ok) return true;
+    if (res.status === 409) return false;
+    throw new Error(`inventory rejected the holds/verify request with ${res.status}`);
   };
 }

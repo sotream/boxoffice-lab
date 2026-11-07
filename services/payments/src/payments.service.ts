@@ -6,6 +6,8 @@ import { Psp } from "./psp";
 export class StepTimeout extends Error {}
 
 export type ConfirmSeats = (eventId: number, seatIds: number[], userId: string) => Promise<boolean>;
+/** Read-only pre-charge check: does the user hold all these seats right now? false = no (do not charge); a thrown StepTimeout = unknown. */
+export type VerifyHolds = (eventId: number, seatIds: number[], userId: string) => Promise<boolean>;
 export interface PaymentRequest { idempotencyKey: string; eventId: number; userId: string; seatIds: number[]; amountCents: number }
 export type PaymentView = { id: number; status: string };
 /**
@@ -55,6 +57,8 @@ export class PaymentsService {
     private readonly stepTimeoutMs = 2000,
     /** Optional fault-injection callback (tests only). */
     private readonly faults?: FaultHook,
+    /** Pre-charge ownership check (ADR 007). Optional only so unit tests can leave it out; the service always passes it. */
+    private readonly verifyHolds?: VerifyHolds,
   ) {}
 
   private async fault(point: FaultPoint, id: number, from?: string, to?: string): Promise<void> {
@@ -83,7 +87,22 @@ export class PaymentsService {
       const view = { id: Number(existing.id), status: existing.status as string };
       return this.isFinal(view.status) ? { kind: "done", payment: view } : { kind: "in-progress", payment: view };
     }
-    return this.runBounded(Number(ins.rows[0].id)); // bigserial comes back from pg as a string
+    const id = Number(ins.rows[0].id); // bigserial comes back from pg as a string
+    if (this.verifyHolds) {
+      // A brand-new payment has not touched the PSP yet, so stopping it here moves no money. Done only on this first call: a resumed
+      // PENDING saga may already have been charged (crash after the charge), and must never be failed on a later ownership answer.
+      let held: boolean;
+      try { held = await this.within(this.verifyHolds(req.eventId, req.seatIds, req.userId)); }
+      catch (e) {
+        if (!(e instanceof StepTimeout)) throw e;
+        return { kind: "in-progress", payment: { id, status: "PENDING" } }; // unknown: the sweeper charges and confirm decides
+      }
+      if (!held) {
+        const row: PaymentRow = { id, idempotency_key: key, event_id: req.eventId, user_id: req.userId, seat_ids: req.seatIds, amount_cents: req.amountCents, status: "PENDING", trace: traceFields() ?? null };
+        return { kind: "done", payment: await this.transition(id, "PENDING", "FAILED", "payment.failed", row) };
+      }
+    }
+    return this.runBounded(id);
   }
 
   /** Run the saga, but answer the caller within the step timeout: a timed-out step leaves the saga resumable and reports in-progress. */

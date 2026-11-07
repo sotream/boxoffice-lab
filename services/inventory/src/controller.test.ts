@@ -22,6 +22,16 @@ describe("InventoryController", () => {
     expect(await ctl.availability(E)).toEqual({ free: 10, held: 0, sold: 2 });
   });
 
+  it("holds/verify: 200 for the holder, 409 for anybody else, 400 on a malformed body; it changes nothing", async () => {
+    await ctl.hold(E, { seatIds: [5, 6], userId: "v1" });
+    const before = await ctl.availability(E);
+    expect(await ctl.verifyHolds(E, { seatIds: [5, 6], userId: "v1" })).toEqual({ held: [5, 6] });
+    await expect(ctl.verifyHolds(E, { seatIds: [5, 6], userId: "v2" })).rejects.toBeInstanceOf(ConflictException);
+    await expect(ctl.verifyHolds(E, { seatIds: [], userId: "v1" })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(ctl.verifyHolds(E, { seatIds: [5], userId: 1 as never })).rejects.toBeInstanceOf(BadRequestException);
+    expect(await ctl.availability(E)).toEqual(before);
+  });
+
   it("any malformed hold body is a 400 (never reaches the database)", async () => {
     const before = await ctl.availability(E);
     await fc.assert(

@@ -16,6 +16,7 @@ async function bootstrap() {
     e.int("PG_POOL", 20, { min: 1 }); e.url("INVENTORY_URL", "http://localhost:3101");
     e.num("PSP_LATENCY_MS", 100, { min: 0 }); e.num("PSP_FAIL_RATE", 0, { min: 0, max: 1 });
     e.int("PSP_TIMEOUT_MS", 2000, { min: 1 }); e.int("CONFIRM_TIMEOUT_MS", 2000, { min: 1 }); e.bool("PSP_ADMIN", false);
+    e.safeguard("VERIFY_HOLDS"); // ADR 007: off only for the benchmark of the compensation path and the e2e scenario for the check-to-confirm window
     e.int("SEAT_PRICE_CENTS", 5000, { min: 1, max: 100_000_000 }); // 8 seats must still fit the int4 column
     return { port: e.port("PORT", 3103), broker: e.hostPort("KAFKA_BROKER", "localhost:59092"), shutdown: shutdownEnv(e),
       // Key of the service-to-service request signature (the gateway signs with it, the secret itself is never sent); the development default is

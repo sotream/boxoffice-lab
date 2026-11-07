@@ -739,5 +739,60 @@
       "adds the internal credential"
     ],
     "description": "gateway signs an empty body instead of the one it sends, so payments would refuse every payment"
+  },
+  {
+    "id": "pay-verify-skip",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "if (!held) {",
+    "replace": "if (false) {",
+    "expectFailingTests": [
+      "seats not held by the payer: FAILED, nothing charged"
+    ],
+    "description": "payments charges even when inventory says the payer does not hold the seats"
+  },
+  {
+    "id": "pay-verify-unknown-as-no",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "if (!(e instanceof StepTimeout)) throw e;\n        return { kind: \"in-progress\", payment: { id, status: \"PENDING\" } }; // unknown: the sweeper charges and confirm decides",
+    "replace": "if (!(e instanceof StepTimeout)) throw e;\n        held = false;",
+    "expectFailingTests": [
+      "an unknown answer (timeout) does not fail the payment"
+    ],
+    "description": "payments treats an unknown answer from inventory as 'not held' and fails a payment that may be perfectly valid"
+  },
+  {
+    "id": "pay-verify-http-5xx-as-no",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/confirm-seats.ts",
+    "find": "if (res.status >= 500) throw new StepTimeout(`inventory ${res.status}`);\n    if (res.ok) return true;\n    if (res.status === 409) return false;\n    throw new Error(`inventory rejected the holds/verify",
+    "replace": "if (res.ok) return true;\n    if (res.status >= 400) return false;\n    throw new Error(`inventory rejected the holds/verify",
+    "expectFailingTests": [
+      "5xx, a timeout and an unreachable inventory are unknown"
+    ],
+    "description": "the pre-charge check maps every error status of inventory to 'not held'"
+  },
+  {
+    "id": "inv-verify-ignores-owner",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3 AND ((status='held' AND hold_until >= now()) OR status='sold')`",
+    "replace": "WHERE event_id=$1 AND seat_id = ANY($2) AND $3::text IS NOT NULL AND ((status='held' AND hold_until >= now()) OR status='sold')`",
+    "expectFailingTests": [
+      "true only when the user holds every one of the seats now"
+    ],
+    "description": "the ownership check ignores who holds the seats"
+  },
+  {
+    "id": "inv-verify-ignores-expiry",
+    "package": "@boxoffice/inventory",
+    "file": "services/inventory/src/inventory.service.ts",
+    "find": "WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3 AND ((status='held' AND hold_until >= now()) OR status='sold')`",
+    "replace": "WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3 AND (status='held' OR status='sold')`",
+    "expectFailingTests": [
+      "an expired hold is not a hold"
+    ],
+    "description": "the ownership check treats an expired hold as a live one"
   }
 ]

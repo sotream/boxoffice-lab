@@ -110,6 +110,13 @@ export class EnvReader {
     return v ?? devDefault;
   }
 
+  /** A safety control that is on by default and may be switched off only outside production (tests, benchmarks). */
+  safeguard(name: string): boolean {
+    const on = this.bool(name, true);
+    if (!on && this.production) this.problems.push(`${name} cannot be switched off when NODE_ENV=production`);
+    return on;
+  }
+
   /** A secret that may be absent (for example the previous key during a rotation). Refused in production when it is a known development value. */
   optionalSecret(name: string, forbidden: string[] = []): string | undefined {
     const v = this.raw(name);

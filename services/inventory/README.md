@@ -14,6 +14,7 @@ Port 3101. Seat ids: 1 to 8 per request, otherwise 400.
 | Method and path | Body or query | Answer |
 |---|---|---|
 | `POST /events/:id/holds?strategy=atomic-update\|for-update` | `{seatIds, userId}` | 201 `{seatIds, holdUntil}`, 409 when any seat is taken (all-or-nothing) |
+| `POST /events/:id/holds/verify` | `{seatIds, userId}` | 200 `{held}` when the user holds every seat now (a live hold or already sold to them), 409 otherwise. Read only, no lock; internal, called by payments before it charges (payments ADR 007), not routed by the gateway |
 | `POST /events/:id/confirm` | `{seatIds, userId}` | 201 `{sold}` (Nest's default for POST), 409 when the hold is missing, expired or not the caller's. All-or-nothing in a transaction; idempotent for the owner |
 | `GET /events/:id/availability` | | `{free, held, sold}` |
 | `GET /healthz`, `/readyz`, `/metrics` | | see Operations |

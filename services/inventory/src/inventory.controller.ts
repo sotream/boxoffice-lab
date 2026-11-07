@@ -22,6 +22,16 @@ export class InventoryController {
     return { seatIds: r.seatIds, holdUntil: r.holdUntil };
   }
 
+  /** Internal, for payments: 200 when the user holds all the seats now, 409 otherwise. The gateway does not route this path. */
+  @Post("holds/verify")
+  async verifyHolds(@Param("eventId", ParseIntPipe) eventId: number, @Body() body: HoldBody) {
+    if (!Array.isArray(body?.seatIds) || body.seatIds.length === 0 || body.seatIds.length > 8 || typeof body.userId !== "string") {
+      throw new BadRequestException("seatIds (1-8) and userId required");
+    }
+    if (!(await this.svc.verifyHolds(eventId, body.seatIds, body.userId))) throw new ConflictException("seats not held by this user");
+    return { held: body.seatIds };
+  }
+
   @Post("confirm")
   async confirm(@Param("eventId", ParseIntPipe) eventId: number, @Body() body: HoldBody) {
     // Same shape check as hold: an empty or missing seat list must not "succeed" (it matches zero rows) or crash with a 500.

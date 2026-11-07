@@ -270,3 +270,70 @@ describe("outbox relay", () => {
 // Same file, same pool: these suites share the payments tables, so they must not run in parallel workers.
 registerRaceTests(pool);
 registerPropertyTests(pool);
+
+describe("pre-charge ownership check (ADR 007)", () => {
+  const svcWith = (psp: FakePsp, verify: (e: number, s: number[], u: string) => Promise<boolean>, confirm: () => Promise<boolean> = async () => true, stepMs = 2000) =>
+    new PaymentsService(pool, psp, confirm, stepMs, undefined, verify);
+
+  it("seats not held by the payer: FAILED, nothing charged, inventory never asked to confirm, one payment.failed event", async () => {
+    const psp = new FakePsp();
+    let confirms = 0;
+    const svc = svcWith(psp, async () => false, async () => { confirms++; return true; });
+    const r = await svc.pay(req("own1"));
+    expect(r).toMatchObject({ kind: "done", payment: { status: "FAILED" } });
+    expect(psp.chargeCalls).toBe(0);
+    expect(psp.charges.size).toBe(0);
+    expect(confirms).toBe(0);
+    expect(await outbox()).toEqual(["payment.failed"]);
+  });
+
+  it("seats held by the payer: the saga goes on as before and the question carries event, seats and user", async () => {
+    const asked: unknown[] = [];
+    const psp = new FakePsp();
+    const svc = svcWith(psp, async (e, s, u) => { asked.push([e, s, u]); return true; });
+    expect((await svc.pay(req("own2", { eventId: 9, seatIds: [4, 5], userId: "zed" }))).payment.status).toBe("CONFIRMED");
+    expect(asked).toEqual([[9, [4, 5], "zed"]]);
+    expect(psp.charges.size).toBe(1);
+  });
+
+  it("an unknown answer (timeout) does not fail the payment: it stays PENDING uncharged and the sweeper completes it without asking again", async () => {
+    const psp = new FakePsp();
+    let asked = 0;
+    const svc = svcWith(psp, async () => { asked++; throw new StepTimeout("inventory slow"); });
+    const r = await svc.pay(req("own3"));
+    expect(r).toMatchObject({ kind: "in-progress", payment: { status: "PENDING" } });
+    expect(psp.chargeCalls).toBe(0);
+    await pool.query("UPDATE payments.payments SET updated_at = now() - interval '10 seconds'");
+    expect(await svc.sweep(3)).toBe(1);
+    expect(await statusOf()).toBe("CONFIRMED");
+    expect(asked).toBe(1);
+  });
+
+  it("a contract error from the check propagates, and the payment is neither charged nor failed", async () => {
+    const psp = new FakePsp();
+    const svc = svcWith(psp, async () => { throw new Error("inventory rejected the holds/verify request with 400"); });
+    await expect(svc.pay(req("own4"))).rejects.toThrow(/holds\/verify/);
+    expect(psp.chargeCalls).toBe(0);
+    expect(await statusOf()).toBe("PENDING");
+  });
+
+  it("a repeated request with the same key returns the stored result and does not ask again", async () => {
+    const psp = new FakePsp();
+    let asked = 0;
+    const svc = svcWith(psp, async () => { asked++; return false; });
+    expect((await svc.pay(req("own5"))).payment.status).toBe("FAILED");
+    expect((await svc.pay(req("own5"))).payment.status).toBe("FAILED");
+    expect(asked).toBe(1);
+  });
+
+  it("a payment that was already charged is never failed by a later answer: resume of a charged-then-crashed saga does not ask", async () => {
+    const psp = new FakePsp();
+    let asked = 0;
+    const svc = new PaymentsService(pool, psp, async () => true, 2000, crashOnce("after-charge"), async () => { asked++; return true; });
+    await expect(svc.pay(req("own6"))).rejects.toThrow(/crash at after-charge/);
+    expect(asked).toBe(1);
+    expect((await svc.resume(1)).status).toBe("CONFIRMED");
+    expect(asked).toBe(1); // resume goes straight on from PENDING with the existing charge
+    expect(psp.charges.size).toBe(1);
+  });
+});

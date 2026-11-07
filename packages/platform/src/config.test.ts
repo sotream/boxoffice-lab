@@ -37,4 +37,23 @@ describe("config", () => {
     expect(() => loadConfig((e) => e.hostPort("KAFKA_BROKER", "localhost:1"), { KAFKA_BROKER: "localhost" })).toThrow(/host:port/);
     expect(() => loadConfig((e) => e.oneOf("M", ["a", "b"] as const, "a"), { M: "c" })).toThrow(/one of a\|b/);
   });
+
+  it("safeguard: on by default, may be switched off outside production, never in production", () => {
+    const f = (env: Record<string, string>) => loadConfig((e) => e.safeguard("VERIFY_HOLDS"), env);
+    expect(f({})).toBe(true);
+    expect(f({ VERIFY_HOLDS: "1" })).toBe(true);
+    expect(f({ VERIFY_HOLDS: "0" })).toBe(false);
+    expect(f({ NODE_ENV: "production" })).toBe(true);
+    expect(() => f({ NODE_ENV: "production", VERIFY_HOLDS: "0" })).toThrow(/cannot be switched off when NODE_ENV=production/);
+    expect(() => f({ VERIFY_HOLDS: "maybe" })).toThrow(/must be a boolean/);
+  });
+
+  it("optionalSecret: absent is fine, a known development value is refused only in production", () => {
+    const f = (env: Record<string, string>) => loadConfig((e) => e.optionalSecret("PREV", ["dev-internal-token"]), env);
+    expect(f({})).toBeUndefined();
+    expect(f({ PREV: "old" })).toBe("old");
+    expect(f({ PREV: "dev-internal-token" })).toBe("dev-internal-token");
+    expect(() => f({ NODE_ENV: "production", PREV: "dev-internal-token" })).toThrow(/known development value/);
+    expect(f({ NODE_ENV: "production", PREV: "real-old-key" })).toBe("real-old-key");
+  });
 });
