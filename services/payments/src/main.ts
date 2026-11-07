@@ -9,16 +9,20 @@ import { createPool, migrate } from "./db";
 import { outboxPublished, outboxRelayErrors, registerOutboxGauges, registerSagaGauge, sweeperResumed, sweeperRuns } from "./metrics";
 import { installInternalAuth } from "./internal-auth";
 import { OutboxRelay } from "./outbox-relay";
+import { sweepMarginProblem } from "./sweep-margin";
 
 async function bootstrap() {
   const log = initService("payments");
   const cfg = loadConfigOrExit((e) => {
     e.int("PG_POOL", 20, { min: 1 }); e.url("INVENTORY_URL", "http://localhost:3101");
     e.num("PSP_LATENCY_MS", 100, { min: 0 }); e.num("PSP_FAIL_RATE", 0, { min: 0, max: 1 });
-    e.int("PSP_TIMEOUT_MS", 2000, { min: 1 }); e.int("CONFIRM_TIMEOUT_MS", 2000, { min: 1 }); e.bool("PSP_ADMIN", false);
-    e.safeguard("VERIFY_HOLDS"); // ADR 007: off only for the benchmark of the compensation path and the e2e scenario for the check-to-confirm window
+    const pspTimeoutMs = e.int("PSP_TIMEOUT_MS", 2000, { min: 1 }); const confirmTimeoutMs = e.int("CONFIRM_TIMEOUT_MS", 2000, { min: 1 }); e.bool("PSP_ADMIN", false);
+    const verifyHolds = e.safeguard("VERIFY_HOLDS"); // ADR 007: off only for the benchmark of the compensation path and the e2e scenario for the check-to-confirm window
+    const sweepMinAgeMs = e.int("SWEEP_MIN_AGE_MS", 3000, { min: 1 }); // how old a PENDING/CHARGED/REFUNDING saga must be before the sweeper touches it
+    const margin = sweepMarginProblem({ sweepMinAgeMs, confirmTimeoutMs, pspTimeoutMs, verifyHolds }); // ADR 007
+    if (margin) e.problems.push(margin);
     e.int("SEAT_PRICE_CENTS", 5000, { min: 1, max: 100_000_000 }); // 8 seats must still fit the int4 column
-    return { port: e.port("PORT", 3103), broker: e.hostPort("KAFKA_BROKER", "localhost:59092"), shutdown: shutdownEnv(e),
+    return { sweepMinAgeMs, port: e.port("PORT", 3103), broker: e.hostPort("KAFKA_BROKER", "localhost:59092"), shutdown: shutdownEnv(e),
       // Key of the service-to-service request signature (the gateway signs with it, the secret itself is never sent); the development default is
       // refused with NODE_ENV=production. The previous key is accepted as well while it is being rotated out.
       internalToken: e.secret("PAYMENTS_INTERNAL_TOKEN", "dev-internal-token"),
@@ -51,7 +55,7 @@ async function bootstrap() {
   svc.onSweepError = (id, err) => { sweeperRuns.inc({ result: "error" }); log.warn("sweeper could not advance a saga", { paymentId: id, err }); };
   const sweeperLoop = startLoop({
     name: "sweeper", intervalMs: 1000,
-    fn: async () => { const n = await svc.sweep(); sweeperRuns.inc({ result: "ok" }); if (n) sweeperResumed.inc(n); },
+    fn: async () => { const n = await svc.sweep(cfg.sweepMinAgeMs / 1000); sweeperRuns.inc({ result: "ok" }); if (n) sweeperResumed.inc(n); },
     onError: (err) => { sweeperRuns.inc({ result: "error" }); log.warn("sweeper failed", { err }); }
   });
 
