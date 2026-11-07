@@ -43,25 +43,34 @@ export async function runConsumer(handler: NotificationHandler, o: ConsumerOptio
         await commitOffsetsIfNecessary();
         await heartbeat();
       }
-      if (typeof batch.offsetLag === "function") consumerLag.set({ partition: String(batch.partition) }, Number(batch.offsetLag()));
     }
   });
 
-  // Lag is sampled on a timer from the broker, not only when a batch finishes: a stalled consumer receives no batches, so a
-  // gauge updated only there would freeze at its last (possibly zero) value exactly when the alert needs it to grow.
+  // Lag is sampled on a timer from the broker (end offset minus committed offset) and is the ONLY writer of the gauge: a stalled
+  // consumer receives no batches, so a value written per batch would freeze exactly when an alert needs it to grow, and two
+  // writers with different definitions of lag would make the series flicker. The timer starts immediately and (re)connects
+  // lazily, so a broker that is unreachable at boot is retried instead of disabling the sampler for the life of the process.
   const admin = typeof (kafka as { admin?: unknown }).admin === "function" ? kafka.admin() : undefined;
   let lagTimer: NodeJS.Timeout | undefined;
+  let stopped = false, sampling = false, adminUp = false;
   if (admin) {
     const sample = async () => {
+      if (stopped || sampling) return; // a slow broker call must not stack up samples
+      sampling = true;
       try {
+        if (!adminUp) { await admin.connect(); adminUp = true; }
         const [committed] = await admin.fetchOffsets({ groupId: o.groupId, topics: [o.topic] });
         const ends = await admin.fetchTopicOffsets(o.topic);
+        if (stopped) return;
         for (const [partition, lag] of partitionLag(committed?.partitions ?? [], ends)) consumerLag.set({ partition: String(partition) }, lag);
-      } catch (err) { getLogger().debug("lag sample failed", { err }); }
+      } catch (err) { adminUp = false; getLogger().debug("lag sample failed", { err }); }
+      finally { sampling = false; }
     };
-    admin.connect().then(() => { void sample(); lagTimer = setInterval(sample, o.lagSampleMs ?? 10_000); lagTimer.unref(); }).catch((err) => getLogger().warn("lag sampler could not connect", { err }));
+    void sample();
+    lagTimer = setInterval(sample, o.lagSampleMs ?? 10_000);
+    lagTimer.unref();
   }
-  return { stop: async () => { if (lagTimer) clearInterval(lagTimer); await admin?.disconnect().catch(() => undefined); await consumer.disconnect(); await dlq.disconnect(); } };
+  return { stop: async () => { stopped = true; if (lagTimer) clearInterval(lagTimer); await admin?.disconnect().catch(() => undefined); await consumer.disconnect(); await dlq.disconnect(); } };
 }
 
 /**
