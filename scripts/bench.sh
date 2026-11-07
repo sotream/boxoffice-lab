@@ -77,7 +77,8 @@ flush_redis_db() {
 }
 
 truncate_payments() {
-  local sql="TRUNCATE payments.payments, payments.outbox"
+  # The schema is created by the payments service on its first start, so on a fresh database it does not exist yet.
+  local sql="DO \$\$ BEGIN IF to_regclass('payments.payments') IS NOT NULL THEN TRUNCATE payments.payments, payments.outbox; END IF; END \$\$"
   if command -v psql >/dev/null; then psql -q "$DATABASE_URL" -c "$sql" >/dev/null; return; fi
   local c=${PG_CONTAINER:-$(container_for_port 55432)}
   [ -n "$c" ] || { echo "payments cleanup needs psql or a Postgres container (PG_CONTAINER)" >&2; exit 1; }
