@@ -21,7 +21,7 @@ Port 3100 (public). Anything else is 404, including `/healthz`, `/readyz` and `/
 |---|---|---|
 | `POST /events/:id/queue/join`, `GET /events/:id/queue/status` | waiting-room | per-IP bucket; fails closed (503) if Redis is down |
 | `GET /events/:id/availability` | inventory | per-IP bucket; fails open if Redis is down |
-| `POST /events/:id/holds`, `POST /events/:id/confirm` | inventory | valid admission token for that event (else 403, inventory untouched), per-user bucket; fails closed (503) |
+| `POST /events/:id/holds`, `POST /events/:id/confirm` | inventory | valid admission token for that event (else 403, inventory untouched), per-user bucket (429), then the body `userId` must equal the token's user (else 403; not JSON: 400); any other method is 405; fails closed (503) |
 | `GET /healthz`, `/readyz`, `/metrics` | not served here: 404 on this port | ops port `OPS_PORT`, see Operations |
 
 Other statuses: 429 with `Retry-After: 1` when limited, 504 when the upstream times out or is unreachable.
@@ -35,6 +35,7 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 |---|---|---|
 | `PORT` | 3100 | Public HTTP port |
 | `OPS_PORT` | 3106 | Internal port for `/healthz`, `/readyz`, `/metrics`; the process exits if it cannot bind it |
+| `OPS_HOST` | 127.0.0.1 | Address the ops port binds to. Loopback by default so the ops endpoints are not reachable from wherever `PORT` is; in a container set `0.0.0.0` and keep the port off the public network. The `observability` compose profile scrapes the host through `host.docker.internal`, so it needs `OPS_HOST=0.0.0.0` |
 | `REDIS_URL` | `redis://localhost:56379` | Limiter store |
 | `INVENTORY_URL` | `http://localhost:3101` | Upstream |
 | `QUEUE_URL` | `http://localhost:3102` | Upstream (waiting-room) |
