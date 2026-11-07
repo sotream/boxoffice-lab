@@ -90,3 +90,40 @@ describe("hold duration (HOLD_SECONDS)", () => {
     expect((await svc.hold(e, [1], "c")).ok).toBe(false);           // the default hold is still valid
   });
 });
+
+describe("verifyHolds (the read-only question payments asks before it charges)", () => {
+  it("true only when the user holds every one of the seats now", async () => {
+    await svc.hold(EVENT, [1, 2], "a", "atomic-update");
+    await svc.hold(EVENT, [3], "b", "atomic-update");
+    expect(await svc.verifyHolds(EVENT, [1, 2], "a")).toBe(true);
+    expect(await svc.verifyHolds(EVENT, [2, 1], "a")).toBe(true);        // order does not matter
+    expect(await svc.verifyHolds(EVENT, [1, 1, 2], "a")).toBe(true);     // duplicates do not count twice
+    expect(await svc.verifyHolds(EVENT, [1, 2], "b")).toBe(false);       // somebody else's seats
+    expect(await svc.verifyHolds(EVENT, [1, 3], "a")).toBe(false);       // one of them is someone else's
+    expect(await svc.verifyHolds(EVENT, [1, 4], "a")).toBe(false);       // one of them is free
+    expect(await svc.verifyHolds(EVENT, [999], "a")).toBe(false);        // no such seat
+    expect(await svc.verifyHolds(EVENT + 1, [1, 2], "a")).toBe(false);   // another event
+  });
+
+  it("an expired hold is not a hold; a sold seat still belongs to its buyer", async () => {
+    await svc.hold(EVENT, [5], "a", "atomic-update");
+    await svc.hold(EVENT, [6], "a", "atomic-update");
+    await svc.confirm(EVENT, [6], "a");
+    await pool.query("UPDATE seats SET hold_until = now() - interval '1 second' WHERE event_id=$1 AND seat_id=5", [EVENT]);
+    expect(await svc.verifyHolds(EVENT, [5], "a")).toBe(false);
+    expect(await svc.verifyHolds(EVENT, [6], "a")).toBe(true);
+    expect(await svc.verifyHolds(EVENT, [6], "b")).toBe(false);
+  });
+
+  it("takes no lock and writes nothing", async () => {
+    await svc.hold(EVENT, [7], "a", "atomic-update");
+    const before = (await pool.query("SELECT status, held_by, hold_until FROM seats WHERE event_id=$1 ORDER BY seat_id", [EVENT])).rows;
+    const holder = await pool.connect();
+    try {
+      await holder.query("BEGIN");
+      await holder.query("SELECT 1 FROM seats WHERE event_id=$1 AND seat_id=7 FOR UPDATE", [EVENT]); // a writer holds the row
+      expect(await svc.verifyHolds(EVENT, [7], "a")).toBe(true);                                      // the read does not wait for it
+    } finally { await holder.query("ROLLBACK"); holder.release(); }
+    expect((await pool.query("SELECT status, held_by, hold_until FROM seats WHERE event_id=$1 ORDER BY seat_id", [EVENT])).rows).toEqual(before);
+  });
+});

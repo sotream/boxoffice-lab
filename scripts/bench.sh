@@ -252,7 +252,7 @@ bench_payments() {
     for r in $(seq 1 "$RUNS"); do
       # Idempotency keys repeat between runs: an unclean table would turn the run into cached replays.
       truncate_payments
-      start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL=20
+      start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL=20 VERIFY_HOLDS=0 # pay.js pays for seats nobody holds: with the pre-charge check (ADR 007) it would measure the cheap FAILED path, not the compensation path
       check_load "payments psp=${lat}ms run $r"
       echo "payments psp=${lat}ms run $r/$RUNS" >&2
       k6_run "$prefix.run$r" "$ROOT/services/payments/load/pay.js"

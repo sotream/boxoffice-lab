@@ -3,7 +3,7 @@ import { registerPoolMetrics } from "@boxoffice/platform";
 import { createPool } from "./db";
 import { PaymentsController, SEAT_PRICE_CENTS } from "./payments.controller";
 import { PaymentsService } from "./payments.service";
-import { confirmSeatsOverHttp } from "./confirm-seats";
+import { confirmSeatsOverHttp, verifyHoldsOverHttp } from "./confirm-seats";
 import { FakePsp } from "./psp";
 
 const pool = createPool(Number(process.env.PG_POOL ?? 20));
@@ -26,7 +26,8 @@ class AdminController {
   controllers: [PaymentsController, AdminController],
   providers: [{ provide: SEAT_PRICE_CENTS, useFactory: () => Number(process.env.SEAT_PRICE_CENTS ?? 5000) }, {
     provide: PaymentsService,
-    useFactory: () => new PaymentsService(pool, psp, confirmSeatsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000)), Number(process.env.PSP_TIMEOUT_MS ?? 2000))
+    useFactory: () => new PaymentsService(pool, psp, confirmSeatsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000)), Number(process.env.PSP_TIMEOUT_MS ?? 2000), undefined,
+      /^(0|false|no|off)$/i.test(process.env.VERIFY_HOLDS ?? "") ? undefined : verifyHoldsOverHttp(inventoryUrl, Number(process.env.CONFIRM_TIMEOUT_MS ?? 2000)))
   }]
 })
 export class AppModule {}

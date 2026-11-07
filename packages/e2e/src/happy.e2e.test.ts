@@ -35,7 +35,16 @@ describe("scenario 1: flash sale, no faults", () => {
     const s = report.summary as Record<string, number>;
     expect(s.confirmed).toBeGreaterThan(20);
     expect(s.failed).toBeGreaterThan(5);       // the PSP declined some charges
-    expect(s.refunded).toBeGreaterThan(0);     // cheaters paid (as themselves) for seats they did not hold: charged, then compensated
+    // cheaters pay (as themselves) for seats they do not hold: payments asks inventory BEFORE the charge (ADR 007), so they end FAILED
+    // with the card untouched. Under load that question can time out; the payment then goes on unchecked and the confirm refuses it, so
+    // REFUNDED is still possible for a cheater, but never a confirmed seat, and refunds can only be cheaters'.
+    const cheaterIds = load.records.filter((r) => r.kind === "cheater").map((r) => r.userId);
+    expect(cheaterIds.length).toBeGreaterThan(0);
+    const cheaterRows = await stack.q<{ user_id: string; status: string }>("SELECT user_id, status FROM payments.payments WHERE user_id = ANY($1)", [cheaterIds]);
+    expect(cheaterRows.length).toBeGreaterThan(0);
+    expect(cheaterRows.filter((r) => r.status !== "FAILED" && r.status !== "REFUNDED").map((r) => `${r.user_id}:${r.status}`), "a cheater ended with something other than FAILED or REFUNDED").toEqual([]);
+    expect(cheaterRows.filter((r) => r.status === "FAILED").length, "most cheaters are stopped before the charge").toBeGreaterThan(0);
+    expect(s.refunded, "refunds only for cheaters whose check timed out").toBeLessThanOrEqual(cheaterRows.length);
     expect(s.impostors).toBeGreaterThan(0);    // impostors put another user's id in the pay body ...
     expect(s.impostors403).toBe(s.impostors);  // ... and every one was refused by the gateway; (g) shows that nothing was charged
     expect(s.kafkaDuplicates).toBeGreaterThan(5);     // the broker really delivered duplicates, and every one was suppressed

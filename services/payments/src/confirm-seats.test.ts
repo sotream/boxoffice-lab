@@ -2,7 +2,7 @@ import { createServer, Server } from "node:http";
 import { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { BadRequestException } from "@nestjs/common";
-import { confirmSeatsOverHttp } from "./confirm-seats";
+import { confirmSeatsOverHttp, verifyHoldsOverHttp } from "./confirm-seats";
 import { PaymentsController } from "./payments.controller";
 import { StepTimeout } from "./payments.service";
 
@@ -44,5 +44,22 @@ describe("payments controller rejects bad seat lists before any charge", () => {
   });
   it.each([0, -1, 3_000_000_000, 1.5])("an event id of %j is a 400 as well", async (eventId) => {
     await expect(ctrl.pay("k", { ...body([1]), eventId }, res)).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe("verifyHoldsOverHttp: the pre-charge question", () => {
+  const verify = (timeoutMs = 500) => verifyHoldsOverHttp(url, timeoutMs)(1, [1, 2], "u");
+  it("2xx means the payer holds the seats", async () => { status = 200; delayMs = 0; expect(await verify()).toBe(true); });
+  it("409 means they do not: the one answer that stops the payment before the charge", async () => { status = 409; expect(await verify()).toBe(false); });
+  it("5xx, a timeout and an unreachable inventory are unknown, never 'not held'", async () => {
+    status = 503; delayMs = 0; await expect(verify()).rejects.toBeInstanceOf(StepTimeout);
+    status = 200; delayMs = 300; await expect(verify(50)).rejects.toBeInstanceOf(StepTimeout); delayMs = 0;
+    await expect(verifyHoldsOverHttp("http://127.0.0.1:1", 200)(1, [1], "u")).rejects.toBeInstanceOf(StepTimeout);
+  });
+  it.each([400, 403, 404])("%i is a contract bug: not 'not held' and not retried as slow", async (s) => {
+    status = s; delayMs = 0;
+    const e = await verify().catch((x) => x);
+    expect(e).toBeInstanceOf(Error);
+    expect(e).not.toBeInstanceOf(StepTimeout);
   });
 });

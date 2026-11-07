@@ -86,6 +86,21 @@ export class InventoryService {
   }
 
   /** Confirm a hold into a sale; only the holder, only while the hold is valid. All-or-nothing, like hold. */
+  /**
+   * Read-only question for payments, asked BEFORE it charges: does this user hold every one of these seats right now (a live hold,
+   * or already sold to them)? No lock and no write; the answer can be out of date a moment later (the hold may expire), which is why
+   * confirm stays the authority and payments keeps its refund path.
+   */
+  async verifyHolds(eventId: number, seatIds: number[], userId: string): Promise<boolean> {
+    const ids = [...new Set(seatIds)];
+    const res = await this.pool.query(
+      `SELECT count(*)::int AS n FROM seats
+       WHERE event_id=$1 AND seat_id = ANY($2) AND held_by=$3 AND ((status='held' AND hold_until >= now()) OR status='sold')`,
+      [eventId, ids, userId]
+    );
+    return res.rows[0].n === ids.length;
+  }
+
   async confirm(eventId: number, seatIds: number[], userId: string): Promise<boolean> {
     const ids = [...new Set(seatIds)];
     const client = await this.pool.connect();

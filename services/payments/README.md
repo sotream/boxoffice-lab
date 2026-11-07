@@ -11,7 +11,7 @@ Interview questions: **"How do you make payments safe to retry?"**, **"Saga vs 2
 
 ## Saga (orchestrated by this service)
 `PENDING --charge--> CHARGED --confirm seats--> CONFIRMED`
-`CHARGED --seats lost--> REFUNDING --refund--> REFUNDED` (compensation; `REFUNDING` is claimed by compare-and-set BEFORE the refund is issued, ADR 005) and `PENDING --charge declined--> FAILED`. `REFUNDING` is in progress, not final: `pay()` answers 202 and the sweeper resumes it.
+`CHARGED --seats lost--> REFUNDING --refund--> REFUNDED` (compensation; `REFUNDING` is claimed by compare-and-set BEFORE the refund is issued, ADR 005) and `PENDING --charge declined--> FAILED`. Before the first charge of a new payment, payments asks inventory (`POST /events/:id/holds/verify`, read only) whether the payer holds the seats: no means `PENDING --seats not held--> FAILED` with the PSP never called, unknown (timeout, 5xx) means the payment goes on and the confirm decides ([ADR 007](adr/007-verify-holds-before-charging.md)); the check runs only for the call that created the payment, never when a possibly charged saga is resumed. `REFUNDING` is in progress, not final: `pay()` answers 202 and the sweeper resumes it.
 Every transition is a compare-and-set `UPDATE ... WHERE status = <from>` plus an outbox row in the **same transaction**. `resume(id)` continues from the stored state after a crash.
 
 ## Outbox relay
@@ -55,6 +55,7 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 | `PSP_ADMIN` | 0 | `1` enables `POST /admin/psp` |
 | `PAYMENTS_INTERNAL_TOKEN` | `dev-internal-token` | HMAC key with which the gateway signs its requests (`x-internal-auth`); the key itself is never sent. With `NODE_ENV=production` it must be set and not the default, otherwise exit 78 |
 | `PAYMENTS_INTERNAL_TOKEN_PREVIOUS` | unset | Optional previous key, accepted in addition to the current one during a rotation (deploy payments with both, then the gateway with the new one, then drop the previous). Refused in production when it is the development default |
+| `VERIFY_HOLDS` | 1 | The pre-charge ownership check (ADR 007). `0` switches it off, for the benchmark of the compensation path and one e2e scenario only; refused with `NODE_ENV=production` (exit 78) |
 | `SEAT_PRICE_CENTS` | 5000 | Price of one seat in cents, an integer from 1 to 100 000 000 (8 seats must fit int4) |
 | `SAGA_RUNS` | 40 | Tests only: number of generated saga scenarios |
 | `SHUTDOWN_DEADLINE_MS` | 10000 | Total time for graceful shutdown, minimum 100 |
