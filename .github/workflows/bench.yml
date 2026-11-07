@@ -1,0 +1,95 @@
+name: bench
+# Manual only: repeats the k6 scenarios of the services on a GitHub-hosted runner (see docs/benchmarks.md).
+#   gh workflow run bench.yml -f scenario=inventory -f runs=3
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Which scenario to run
+        type: choice
+        options: [inventory, waiting-room, payments, catalog, all]
+        default: inventory
+      runs:
+        description: Runs per row (the table shows median, min and max)
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SCENARIO: ${{ inputs.scenario }}
+      RUNS: ${{ inputs.runs }}
+      BENCH_OUT: ${{ github.workspace }}/bench-out
+      BENCH_MAX_LOAD: "1000" # a fresh runner has no foreign load to wait for
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env: { POSTGRES_USER: lab, POSTGRES_PASSWORD: lab, POSTGRES_DB: lab }
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U lab" --health-interval 2s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["56379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: "2.3.0"
+      # Redpanda is only needed by payments (its outbox relay publishes to Kafka); same start as ci.yml.
+      - name: Start Redpanda
+        if: inputs.scenario == 'payments' || inputs.scenario == 'all'
+        run: |
+          docker run -d --name redpanda -p 59092:59092 redpandadata/redpanda:v24.2.7 \
+            redpanda start --smp=1 --memory=512M --overprovisioned --node-id=0 \
+            --kafka-addr=PLAINTEXT://0.0.0.0:59092 --advertise-kafka-addr=PLAINTEXT://localhost:59092
+          for i in $(seq 1 30); do docker exec redpanda rpk cluster health >/dev/null 2>&1 && exit 0; sleep 2; done
+          docker logs redpanda; exit 1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Log the environment
+        run: |
+          {
+            echo "## Environment"
+            echo
+            echo '```'
+            echo "runner image: ${ImageOS:-unknown} ${ImageVersion:-unknown}"
+            lscpu | head -n 20
+            echo "nproc: $(nproc)"
+            free -m
+            echo "kernel: $(uname -srm)"
+            echo "node: $(node --version)"
+            echo "k6: $(k6 version)"
+            echo "postgres: $(psql 'postgres://lab:lab@localhost:55432/lab' -Atc 'select version()')"
+            echo "commit: $GITHUB_SHA"
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Run scripts/bench.sh
+        run: |
+          if [ "$SCENARIO" = all ]; then
+            scripts/bench.sh all "$RUNS"
+          else
+            scripts/bench.sh "$SCENARIO" "$RUNS"
+          fi
+      - name: Publish the tables
+        if: always()
+        run: |
+          { echo "## Results ($SCENARIO, $RUNS runs per row)"; cat bench-out/table.md; echo; echo '```'; cat bench-out/load.log; echo '```'; } >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bench-out
+          path: bench-out
+          retention-days: 90
