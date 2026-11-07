@@ -48,11 +48,11 @@ jobs:
       # Real processes, kill -9 of payments and notifications, about 2.5 minutes (docs/e2e.md).
       - run: pnpm test:e2e
 
-  # Dependabot PRs are merged here, after the tests above passed. GitHub's own auto-merge needs branch protection with
-  # required checks, which a private repository on the free plan does not have, so the gate is this job's `needs: test`.
-  # Majors stay manual: they are a deliberate move (and, for Postgres/Redis images, a re-measurement).
+  # Dependabot patch and minor PRs: GitHub's native auto-merge. This job only switches it on; GitHub itself merges the PR once the
+  # required check (`test`, enforced by the repository ruleset on main) is green, so a red PR is never merged.
+  # Majors stay manual (a deliberate move, and for the Postgres and Redis images a re-measurement). Bumps of GitHub Actions
+  # stay manual too: the workflow token may not modify workflow files, so it cannot merge them.
   automerge:
-    needs: test
     if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
@@ -63,8 +63,8 @@ jobs:
         uses: dependabot/fetch-metadata@v3
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - if: steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor'
-        run: gh pr merge --squash --delete-branch "$PR_URL"
+      - if: (steps.meta.outputs.update-type == 'version-update:semver-patch' || steps.meta.outputs.update-type == 'version-update:semver-minor') && steps.meta.outputs.package-ecosystem != 'github_actions'
+        run: gh pr merge --auto --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

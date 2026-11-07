@@ -1,5 +1,5 @@
 version: 2
-# Patch and minor PRs are merged by the `automerge` job in ci.yml once the tests pass; majors are reviewed by hand.
+# Patch and minor npm and compose PRs get GitHub auto-merge from the `automerge` job in ci.yml and merge when the required `test` check passes; majors and GitHub Actions bumps are reviewed by hand.
 updates:
   # One pnpm workspace: the lockfile and all packages/*, services/* manifests are updated from the root.
   - package-ecosystem: npm
