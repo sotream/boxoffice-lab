@@ -3,7 +3,8 @@
 //   1. back the target file up (under $TMPDIR/boxoffice-mutation/), apply find -> replace in place,
 //   2. run `pnpm --filter <package> test`; the mutation is KILLED when the run fails,
 //   3. ALWAYS restore the file (finally block, SIGINT/SIGTERM handler, process exit) and verify it byte for byte.
-// Usage: node scripts/mutation-check.mjs [--only id1,id2] [--list] [--file scripts/mutations.json]
+// Usage: node scripts/mutation-check.mjs [--only id1,id2] [--list] [--validate] [--file scripts/mutations.json]
+//   --validate: no tests are run; every entry must point at an existing, mutable file and its `find` must match exactly once (CI runs this).
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -20,6 +21,25 @@ const BACKUP_DIR = join(process.env.TMPDIR || tmpdir(), "boxoffice-mutation");
 const FORBIDDEN = [/^packages\/platform\//, /(^|\/)src\/(main|db|app\.module)\.ts$/, /(^|\/)app\.ts$/, /\.test\.ts$/, /package\.json$/];
 
 mkdirSync(BACKUP_DIR, { recursive: true });
+if (args.includes("--validate")) {
+  const bad = [];
+  const ids = new Set();
+  for (const m of JSON.parse(readFileSync(mutationsFile, "utf8"))) {
+    if (ids.has(m.id)) bad.push(`${m.id}: duplicate id`);
+    ids.add(m.id);
+    if (FORBIDDEN.some((re) => re.test(m.file))) { bad.push(`${m.id}: ${m.file} is off limits`); continue; }
+    const path = resolve(ROOT, m.file);
+    if (!existsSync(path)) { bad.push(`${m.id}: ${m.file} is missing`); continue; }
+    if (m.find === m.replace) bad.push(`${m.id}: find equals replace`);
+    const hits = readFileSync(path, "utf8").split(m.find).length - 1;
+    if (hits !== 1) bad.push(`${m.id}: find string matches ${hits} times in ${m.file}`);
+    if (!Array.isArray(m.expectFailingTests) || m.expectFailingTests.length === 0) bad.push(`${m.id}: expectFailingTests is empty`);
+  }
+  if (bad.length) { console.error(bad.join("\n")); process.exit(1); }
+  console.log(`ok: ${ids.size} mutations, every find matches exactly once`);
+  process.exit(0);
+}
+
 const mutations = JSON.parse(readFileSync(mutationsFile, "utf8"));
 
 /** state of the mutation currently applied, so a signal can undo it */
