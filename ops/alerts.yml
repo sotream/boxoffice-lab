@@ -208,11 +208,11 @@ groups:
           summary: "The outbox relay has been failing for 5 minutes"
           runbook: docs/operations.md#drill-2-broker-down
       - alert: PaymentsSagasStuck
-        expr: max by (state) (payments_sagas{state=~"PENDING|CHARGED|REFUNDING"}) > 0
-        for: 10m
+        expr: payments_oldest_open_saga_age_seconds > 600
+        for: 5m
         labels: { severity: warning, route: ticket, slo: payment-completion }
         annotations:
-          summary: "Sagas have stayed in {{ $labels.state }} for 10 minutes although the sweeper retries every second (drill 4)"
+          summary: "A payment saga has been unfinished for more than 10 minutes although the sweeper retries every second: a customer may be charged without seats (drill 4). Starting value"
           runbook: docs/operations.md#drill-4-slow-payment-provider
       - alert: PaymentsInProgressRatioHigh
         expr: |

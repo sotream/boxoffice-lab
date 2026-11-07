@@ -99,6 +99,7 @@ Every series also carries a `service` label (set once per process). Labels are b
 | `notifications_duplicate_suppressed_total` | counter | `channel` | notifications | Duplicate deliveries suppressed by the per-channel dedup key. |
 | `payments_final_total` | counter | `status` | payments | POST /payments answered with a final or terminal saga status. |
 | `payments_in_progress_total` | counter | - | payments | POST /payments answered 202: the saga is not final yet and a retry with the same Idempotency-Key reads the result. |
+| `payments_oldest_open_saga_age_seconds` | gauge | - | payments | Seconds since the oldest unfinished saga (PENDING, CHARGED or REFUNDING) last changed; 0 when none. A charged payment that nobody can finish keeps growing. |
 | `payments_outbox_backlog` | gauge | - | payments | Outbox rows not yet published. |
 | `payments_outbox_oldest_unpublished_age_seconds` | gauge | - | payments | Age of the oldest unpublished outbox row (0 when the outbox is empty). |
 | `payments_outbox_published_total` | counter | - | payments | Outbox rows published to the broker. |
@@ -161,7 +162,7 @@ Symptom: `HoldLatency*Burn`. Metrics: `http_request_duration_seconds` for the ho
 ### Drill 4: slow payment provider
 
 - Symptom: payment requests answer 202 in-progress instead of a final result; users retry.
-- Metrics: `payments_in_progress_total` rate up, `payments_sagas{state="PENDING"}` or `"CHARGED"` above zero, `http_request_duration_seconds` for `POST /payments` near the step timeout (2 s), `payments_sweeper_resumed_total` after recovery. Alerts: `PaymentsInProgressRatioHigh`, `PaymentsSagasStuck`, `PaymentsSweeperFailing`.
+- Metrics: `payments_in_progress_total` rate up, `payments_sagas{state="PENDING"}` or `"CHARGED"` above zero, `http_request_duration_seconds` for `POST /payments` near the step timeout (2 s), `payments_sweeper_resumed_total` after recovery. `payments_oldest_open_saga_age_seconds` (age of the oldest saga that is still PENDING, CHARGED or REFUNDING; a saga the sweeper cannot finish keeps growing it, unlike the state counts, which are rarely zero under steady traffic). Alerts: `PaymentsInProgressRatioHigh`, `PaymentsSagasStuck`, `PaymentsSweeperFailing`.
 - First action: check the provider's own status and latency. Do not raise `PSP_TIMEOUT_MS` or the confirm timeout to make 202s go away: a timeout is an unknown outcome, and the step timeout must sit above the provider's healthy p99 only. Once the provider recovers the sweeper finishes the sagas by itself (3.1 s in the drill); `payments_sagas` for `PENDING`/`CHARGED` should return to zero. If they do not, look at the sweeper counters and the logs for the payment id.
 
 ### Drill 5: channel down, DLQ
@@ -198,5 +199,6 @@ On a route that does no work this is roughly 15 to 25 % of throughput, which is 
 
 - No distributed tracing backend: ids are propagated and logged, spans are not exported.
 - No end-to-end "confirmed to delivered" latency histogram (see the SLI table).
-- `payments_sagas` scans the payments table; no `status` index exists.
+- `payments_sagas` and `payments_oldest_open_saga_age_seconds` scan the payments table; no `status` index exists.
+- A saga the sweeper can never finish (for example inventory answering 404 for a charged payment) is retried every second forever: it is visible (`payments_sweeper_runs_total{result="error"}`, the age gauge, a warning log per attempt) and alerted, but there is no terminal `NEEDS_REVIEW` state or retry cap; a human has to resolve it.
 - The alert thresholds marked "starting value" are not calibrated.
