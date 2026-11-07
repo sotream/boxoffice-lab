@@ -2,11 +2,11 @@ import { BadRequestException, Body, ConflictException, Controller, Headers, Inje
 import { IdempotencyKeyReused, PaymentsService } from "./payments.service";
 import { finalResults, inProgress, stateLabel } from "./metrics";
 
-/** 1 to 8 positive int4 seat ids (and a positive int4 event id), checked before the card is charged: a value Postgres cannot store would fail at inventory only after the money moved. */
+/** 1 to 8 distinct positive int4 seat ids (and a positive int4 event id), checked before the card is charged: a value Postgres cannot store would fail at inventory only after the money moved. Duplicates are refused too: the price is seats x unit price, so [5,5,5] would bill one seat three times. */
 const INT4_MAX = 2_147_483_647;
 const isId = (x: unknown): x is number => Number.isInteger(x) && (x as number) > 0 && (x as number) <= INT4_MAX;
 function validSeats(v: unknown): v is number[] {
-  return Array.isArray(v) && v.length >= 1 && v.length <= 8 && v.every(isId);
+  return Array.isArray(v) && v.length >= 1 && v.length <= 8 && v.every(isId) && new Set(v).size === v.length;
 }
 
 /** `amountCents` is optional: the price is computed here. A client that still sends it must send exactly the computed value. */

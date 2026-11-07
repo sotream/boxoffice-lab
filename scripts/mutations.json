@@ -570,6 +570,18 @@
     "description": "controller accepts empty or oversized seat lists and charges the card"
   },
   {
+    "id": "pay-seats-duplicates",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.controller.ts",
+    "find": " && new Set(v).size === v.length",
+    "replace": "",
+    "expectFailingTests": [
+      "is a 400",
+      "duplicate seat ids"
+    ],
+    "description": "duplicate seat ids pass validation and one seat is priced several times"
+  },
+  {
     "id": "not-dlq-count-before-send",
     "package": "@boxoffice/notifications",
     "file": "services/notifications/src/consumer.ts",
@@ -656,10 +668,21 @@
     "find": "if (!sameRequest(existing, req)) throw new IdempotencyKeyReused();",
     "replace": "",
     "expectFailingTests": [
-      "another user replaying a key",
       "a different event or a different seat set"
     ],
-    "description": "a replayed idempotency key of another user reads that user's payment instead of a 409"
+    "description": "the same user reusing a key for a different event or seat set reads the stored payment instead of a 409"
+  },
+  {
+    "id": "pay-key-global",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.service.ts",
+    "find": "`${userId.length}:${userId}:${key}`",
+    "replace": "key",
+    "expectFailingTests": [
+      "two users with the same client key",
+      "cannot block another user's key"
+    ],
+    "description": "the stored idempotency key ignores the user again: a squatter's row blocks the victim with a permanent 409"
   },
   {
     "id": "gw-pay-event-binding",

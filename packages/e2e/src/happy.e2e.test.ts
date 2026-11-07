@@ -67,7 +67,7 @@ describe("scenario 1b: the boundary of payments, after the sale", () => {
   const post = (url: string, headers: Record<string, string>, body: string) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
   const count = async () => Number((await stack.q<{ n: string }>("SELECT count(*) n FROM payments.payments"))[0].n);
 
-  it("payments refuses callers without the internal token and prices the order itself; a replayed key of another user is a 409; nothing is written by any of them", async () => {
+  it("payments refuses callers without the internal token and prices the order itself; a replayed key of another user is an independent payment that never reveals the owner's; nothing is written by the refused calls", async () => {
     const before = await count();
     const direct = `${stack.urls.payments}/payments`;
     const key = { "idempotency-key": "e2e-boundary-1" };
@@ -88,19 +88,23 @@ describe("scenario 1b: the boundary of payments, after the sale", () => {
     expect((await post(gw, { "x-admission": tok }, payBody("mallory"))).status).toBe(400); // no Idempotency-Key
     expect((await post(gw, { ...key, "x-admission": tok }, payBody("mallory", { amountCents: 1 }))).status).toBe(400); // payments' price check, relayed
 
-    // replaying the key of a payment somebody else made: 409 and no data about that payment
+    // every call above was refused: nothing was written
+    expect(await count()).toBe(before);
+
+    // replaying the client key of a payment somebody else made: the key is scoped by user, so this is mallory's own payment
+    // (for seats she does not hold, hence not confirmed), never the victim's id or status, and it cannot block the victim
     const victim = load.records.find((r) => r.payStatus === "CONFIRMED")!;
     const replay = await post(gw, { "idempotency-key": victim.payKey, "x-admission": tok }, payBody("mallory", { seatIds: victim.seats.slice(0, 8) }));
-    expect(replay.status).toBe(409);
-    const text = await replay.text();
-    expect(text).toContain("idempotency key reused with a different request");
-    expect(text).not.toContain("CONFIRMED");
-    expect(text).not.toContain(victim.userId);
+    expect([200, 202]).toContain(replay.status);
+    const mine = await replay.json();
+    expect(mine.paymentId).not.toBe(victim.paymentId);
+    expect(mine.status).not.toBe("CONFIRMED");
+    expect(await count()).toBe(before + 1);
     // the owner replaying their own key still gets the stored result
     const owner = await post(gw, { "idempotency-key": victim.payKey, "x-admission": signAdmission(victim.userId, 1, 60, SECRET) }, payBody(victim.userId, { seatIds: victim.seats.slice(0, 8) }));
     expect(owner.status).toBe(200);
     expect(await owner.json()).toMatchObject({ status: "CONFIRMED", paymentId: victim.paymentId, inProgress: false });
 
-    expect(await count()).toBe(before);
+    expect(await count()).toBe(before + 1);
   });
 });
