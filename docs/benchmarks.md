@@ -82,16 +82,34 @@ The spread here is tight (under 5%), unlike the laptop. Finding: on the final co
 - What the data does support: the hot-contention for-update row is stable (1.1x) and fastest, and waiting-room runs at several thousand RPS, an order of magnitude above its admission budget of 500 users/s. Differences below roughly 2x between rows should be read as "not distinguishable" unless they repeat across a quiet-machine run and the runner.
 - This is an argument for quoting ranges, and for treating the planning figures in the playbook (which are rounded down, see [numbers-to-know](numbers-to-know.md)) as orders of magnitude.
 
+## Local: MacBook Air M1, repeat on a quieter machine
+
+Same machine as the first M1 section, repeated the same day (2026-11-07, 15:59 to 16:30 CET) on AC power, with the other applications closed and Redpanda stopped, after the first M1 numbers turned out to be depressed by load. Branch `bench/m4-pro-results` (services unchanged since `47158f1` except the pool handler and the payments key scoping), Docker Desktop with 8 CPUs and 8.3 GB, `scripts/bench.sh inventory 5` then `scripts/bench.sh waiting-room 5`, 0 failed requests, 0 breached thresholds. The machine was not idle: the 1-minute load average before the 25 runs was 3.8 to 16.2 (one outlier, 16.2), and 15 of the 25 runs still started above the threshold of 4 after the 60 s wait; the spread is nevertheless under 6% per row.
+
+| Row | RPS median (min-max) | p95 ms | p99 ms |
+|---|---|---|---|
+| inventory, atomic-update, low contention (100 000 seats) | 3 624 (3 547-3 799) | 18.7 | 23.4 |
+| inventory, atomic-update, hot (20 seats) | 4 207 (4 082-4 485) | 15.9 | 20.3 |
+| inventory, for-update, low contention (100 000 seats) | 3 759 (3 364-3 851) | 18.4 | 23.6 |
+| inventory, for-update, hot (20 seats) | 5 214 (5 020-5 469) | 13.9 | 18.7 |
+| waiting-room, join + 2 status polls | 15 216 (13 761-16 247) | 11.5 | 17.3 |
+
+CPU sampled with `ps` every 5 s during the runs: the Node service peaks at about 160% and k6 at about 160% of one core, on the same machine (this is a single-host test: load generator, service and database compete for the same cores).
+
+The first M1 table above (1 711 to 7 505 RPS) is therefore a result of the machine's state, not of the code: the same rows are 2.0 to 2.4 times higher here. It is kept as a record of how far an uncontrolled run can be off.
+
 ## Three environments compared
 
-| Row (median RPS) | M1 Air (3 runs, noisy) | GitHub runner (5 runs) | M4 Pro (5 runs) |
+| Row (median RPS) | GitHub runner, 4 vCPU (5 runs) | M1 Air, quieter (5 runs) | M4 Pro (5 runs) |
 |---|---|---|---|
-| inventory atomic, low | 1 711 | 1 711 | 10 796 |
-| inventory for-update, low | 2 067 | 1 812 | 10 720 |
-| inventory atomic, hot | 1 995 | 1 960 | 12 261 |
-| inventory for-update, hot | 3 400 | 2 476 | 13 682 |
-| waiting-room | 7 505 | 6 522 | 39 144 |
+| inventory atomic, low | 1 711 | 3 624 | 10 796 |
+| inventory for-update, low | 1 812 | 3 759 | 10 720 |
+| inventory atomic, hot | 1 960 | 4 207 | 12 261 |
+| inventory for-update, hot | 2 476 | 5 214 | 13 682 |
+| waiting-room | 6 522 | 15 216 | 39 144 |
 
-- **Levels are not portable.** The M4 Pro is about 6x the runner on inventory and about 6x on waiting-room, with the same code, the same compose settings and k6 on the same machine. That includes whatever Docker Desktop's VM and the host network path add, and the cause of the factor was not isolated here. A capacity budget derived on one machine says little about another: the README formula (hold RPS x 0.6 / 3) gives about 342 users/s from the runner median and about 2 160 from the M4 Pro median, against a configured 500.
-- **The strategy comparison is consistent where the spread is small.** At low contention atomic-update and for-update are indistinguishable on the runner (-6%) and on the M4 Pro (+0.7%); on neither does the single conditional UPDATE show the ~18% advantage of the first version. At hot contention for-update is faster on both (+26% on the runner, +12% on the M4 Pro). The M1 laptop ranges overlap too much to support either direction.
-- This is the argument for the playbook's position: quote ranges, treat absolute figures as per-environment, and choose between the strategies on correctness.
+- **The factor is nearly constant across rows.** M1 over runner: 2.1x, 2.1x, 2.1x, 2.1x, 2.3x. M4 Pro over M1: 3.0x, 2.9x, 2.8x, 2.6x, 2.6x. Rows that exercise Postgres with a commit per request and a row that touches only Redis scale by the same amount, and the Node service and k6 each use well over one core, so the single-host test is limited by the CPU the machine can give to service plus load generator, not by Postgres or Redis alone. That is what the data supports. It does not separate core count from per-core speed (runner 4 vCPU, M1 4 performance plus 4 efficiency cores, M4 Pro 12 cores in Docker's view), and the CPU sampling was not repeated on the M4 Pro or the runner, so the split is not proven.
+- **The 6x that triggered this was mostly a measurement problem plus real hardware.** M4 Pro over runner is 5.5x to 6.3x, but about 2x of that is the runner against a quiet M1, and about 2.8x is the M1 against the M4 Pro; the first M1 run sat in between only by accident of load.
+- **Levels are not portable.** With the README formula (hold RPS x 0.6 / 3) the budget is about 342 users/s from the runner median, about 725 from the quiet M1 and about 2 160 from the M4 Pro, against a configured 500. Derive it on the target hardware.
+- **The strategy comparison is consistent where the spread is small.** At low contention atomic-update and for-update are indistinguishable on the runner (-6%), the quiet M1 (-4%) and the M4 Pro (+0.7%); on none does the single conditional UPDATE show the ~18% advantage of the first version. At hot contention for-update is faster everywhere (+26%, +24%, +12%).
+- This supports the playbook's position: quote ranges, treat absolute figures as per-environment, and choose between the strategies on correctness.
