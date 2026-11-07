@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import { getLogger } from "./logger";
 
 export const DEFAULT_DATABASE_URL = "postgres://lab:lab@localhost:55432/lab";
@@ -10,6 +10,11 @@ export interface PoolOptions {
   max?: number;
   /** 0 disables the statement timeout (bulk operations only: migrations, seeding). */
   statementTimeoutMs?: number;
+  /**
+   * Client-side limit on one query, for a connection that goes silent (a network partition: no RST, no FIN) where the server's
+   * statement timeout can never fire. Default: statementTimeoutMs + 1000 ms, and off when the statement timeout is off.
+   */
+  queryTimeoutMs?: number;
   connectionTimeoutMs?: number;
   idleTimeoutMs?: number;
   applicationName?: string;
@@ -17,25 +22,57 @@ export interface PoolOptions {
 }
 
 /**
- * The one way services build a Postgres pool. Defaults: 20 connections, 5 s statement timeout, 2 s wait for a connection.
+ * The one way services build a Postgres pool. Defaults: 20 connections, 5 s statement timeout, 6 s client-side query timeout, 2 s wait for a connection.
  * The 'error' handler matters: an idle client that loses its connection emits 'error' on the pool, and without a listener
  * Node treats it as an unhandled error event and the process dies.
  */
 export function createPool(o: PoolOptions = {}): Pool {
+  const statementTimeoutMs = o.statementTimeoutMs ?? 5000;
+  const queryTimeoutMs = o.queryTimeoutMs ?? (statementTimeoutMs > 0 ? statementTimeoutMs + 1000 : 0);
   const pool = new Pool({
     connectionString: o.connectionString ?? process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL,
     max: o.max ?? 20,
     connectionTimeoutMillis: o.connectionTimeoutMs ?? 2000,
-    statement_timeout: o.statementTimeoutMs ?? 5000,
+    statement_timeout: statementTimeoutMs,
+    query_timeout: queryTimeoutMs > 0 ? queryTimeoutMs : undefined,
     application_name: o.applicationName,
     idleTimeoutMillis: o.idleTimeoutMs
   });
   // pg removes its own error listener from a client while it is checked out (inside a transaction, between two queries). If Postgres goes
   // away at that moment the client emits 'error' with nobody listening and Node kills the process (found by the fault suite: docker stop of
   // Postgres under load). The failing query still rejects on its own and the dead client is discarded on release.
-  pool.on("connect", (client) => client.on("error", () => undefined));
+  pool.on("connect", (client) => {
+    client.on("error", () => undefined);
+    if (queryTimeoutMs > 0) destroyOnQueryTimeout(client);
+  });
   pool.on("error", (err) => getLogger().error("idle postgres client error", { err, application: o.applicationName }));
   return pool;
+}
+
+const QUERY_TIMEOUT_MESSAGE = "Query read timeout";
+
+/**
+ * pg's `query_timeout` only rejects the caller's promise: the query stays the client's active query, so every later query on that
+ * connection queues behind an answer that never comes, and a service that does `client.release()` (no argument) after a failed
+ * transaction would hand the hung connection back to the pool as healthy. pg-pool would also try to close it politely
+ * (`client.end()` waits for the peer). So when a query times out the socket is destroyed here: the client becomes unqueryable,
+ * pg-pool discards it on release, and its slot is free for a new connection at once.
+ */
+function destroyOnQueryTimeout(client: PoolClient): void {
+  const query = client.query.bind(client) as (...a: unknown[]) => unknown;
+  const kill = (e: unknown) => {
+    if (e instanceof Error && e.message === QUERY_TIMEOUT_MESSAGE) (client as unknown as { connection: { stream: { destroy(): void } } }).connection.stream.destroy();
+  };
+  (client as unknown as { query: (...a: unknown[]) => unknown }).query = (...args: unknown[]) => {
+    const last = args[args.length - 1];
+    if (typeof last === "function") {
+      args[args.length - 1] = (err: unknown, res: unknown) => { kill(err); (last as (e: unknown, r: unknown) => void)(err, res); };
+      return query(...args);
+    }
+    const r = query(...args);
+    if (r instanceof Promise) r.catch(kill);
+    return r;
+  };
 }
 
 /**

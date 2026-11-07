@@ -1,8 +1,9 @@
 import { mkdtempSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { createPool, migrate } from "./pool";
+import { createPool, DEFAULT_DATABASE_URL, migrate } from "./pool";
 import { POOL_IDLE, POOL_TOTAL, POOL_WAITING, register, registerPoolMetrics } from "./metrics";
 
 const pools: ReturnType<typeof createPool>[] = [];
@@ -151,5 +152,96 @@ describe("registerPoolMetrics", () => {
     expect(await get(POOL_IDLE)).toBe(0);
     expect(await get(POOL_WAITING)).toBe(1);
     a.release(); b.release(); (await waiting).release();
+  });
+});
+
+/** A TCP relay to Postgres that can go silent: from then on it swallows both directions and closes nothing (a partition without RST/FIN). */
+async function silentRelay(): Promise<{ url: string; silence(): void; heal(): void; open(): number; close(): Promise<void> }> {
+  const target = new URL(process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL);
+  let silent = false;
+  const socks = new Set<net.Socket>();
+  const server = net.createServer((c) => {
+    const up = net.connect(Number(target.port), target.hostname);
+    socks.add(c); socks.add(up);
+    const drop = () => { c.destroy(); up.destroy(); socks.delete(c); socks.delete(up); };
+    c.on("error", drop); up.on("error", drop); c.on("close", drop); up.on("close", drop);
+    c.on("data", (d) => { if (!silent) up.write(d); });
+    up.on("data", (d) => { if (!silent) c.write(d); });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const port = (server.address() as net.AddressInfo).port;
+  const u = new URL(target.toString());
+  u.hostname = "127.0.0.1"; u.port = String(port);
+  return {
+    url: u.toString(),
+    silence: () => { silent = true; },
+    heal: () => { silent = false; },
+    open: () => [...socks].filter((s) => !s.destroyed).length / 2,
+    close: async () => { for (const s of socks) s.destroy(); await new Promise<void>((r) => server.close(() => r())); }
+  };
+}
+
+describe("client-side query timeout on a silent connection", () => {
+  it("defaults to the statement timeout plus 1 s and is off when the statement timeout is off", () => {
+    expect((mk().options as { query_timeout?: number }).query_timeout).toBe(6000);
+    expect((mk({ statementTimeoutMs: 0 }).options as { query_timeout?: number }).query_timeout).toBeUndefined();
+    expect((mk({ statementTimeoutMs: 100, queryTimeoutMs: 250 }).options as { query_timeout?: number }).query_timeout).toBe(250);
+  });
+
+  it("pool.query rejects after about the timeout, the broken connection is gone and the next query works", async () => {
+    const relay = await silentRelay();
+    try {
+      const p = mk({ max: 1, statementTimeoutMs: 400, queryTimeoutMs: 700, connectionString: relay.url });
+      expect((await p.query("SELECT 1 AS ok")).rows[0].ok).toBe(1);
+      expect(p.totalCount).toBe(1);
+      relay.silence();
+      const t0 = Date.now();
+      await expect(p.query("SELECT 2")).rejects.toThrow(/Query read timeout/);
+      const ms = Date.now() - t0;
+      expect(ms).toBeGreaterThanOrEqual(650);
+      expect(ms).toBeLessThan(1500);
+      await new Promise((r) => setTimeout(r, 100));
+      expect(p.totalCount, "the timed-out connection must have been removed").toBe(0);
+      expect(relay.open(), "its socket must be closed, not left open").toBe(0);
+      relay.heal();
+      expect((await p.query("SELECT 3 AS ok")).rows[0].ok).toBe(3);
+      expect(p.totalCount).toBe(1);
+    } finally { await relay.close(); }
+  });
+
+  it("a client from pool.connect() whose query timed out is discarded even when the caller releases it without an error", async () => {
+    const relay = await silentRelay();
+    try {
+      const p = mk({ max: 1, statementTimeoutMs: 400, queryTimeoutMs: 700, connectionString: relay.url });
+      const c = await p.connect();
+      await c.query("BEGIN");
+      relay.silence();
+      await expect(c.query("UPDATE pg_class SET relname=relname WHERE false")).rejects.toThrow(/Query read timeout/);
+      // what the services do on a failed transaction: ROLLBACK (fails too), then release() with no argument
+      await c.query("ROLLBACK").catch(() => undefined);
+      c.release();
+      relay.heal();
+      const t0 = Date.now();
+      expect((await p.query("SELECT 4 AS ok")).rows[0].ok).toBe(4);
+      expect(Date.now() - t0, "the next query must not wait behind the hung connection").toBeLessThan(500);
+      expect(p.totalCount).toBe(1);
+    } finally { await relay.close(); }
+  });
+
+  it("a caller waiting for the only connection gets a fresh one as soon as the hung one is discarded", async () => {
+    const relay = await silentRelay();
+    try {
+      const p = mk({ max: 1, statementTimeoutMs: 400, queryTimeoutMs: 700, connectionTimeoutMs: 5000, connectionString: relay.url });
+      await p.query("SELECT 1");
+      relay.silence();
+      const hung = p.query("SELECT 2").catch((e) => e as Error);
+      await new Promise((r) => setTimeout(r, 50));
+      relay.heal(); // new connections work again; the old socket's data is lost
+      const t0 = Date.now();
+      const next = await p.query("SELECT 5 AS ok");
+      expect(next.rows[0].ok).toBe(5);
+      expect((await hung).message).toMatch(/Query read timeout/);
+      expect(Date.now() - t0).toBeLessThan(1800);
+    } finally { await relay.close(); }
   });
 });
