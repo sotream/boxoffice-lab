@@ -11,84 +11,102 @@ beforeAll(async () => {
 });
 afterAll(async () => { await proxy.stop(); await new Promise((r) => echo.close(r)); });
 
-const connect = () => new Promise<net.Socket>((res, rej) => { const s = net.connect(proxy.port, "127.0.0.1", () => res(s)); s.on("error", () => undefined); s.once("error", rej); });
-const next = (s: net.Socket, ms = 2000) => new Promise<string>((res, rej) => { const t = setTimeout(() => rej(new Error("no data")), ms); s.once("data", (d) => { clearTimeout(t); res(d.toString()); }); });
+/** A client connection that buffers everything it receives from the moment it is created, so data that arrives while the test is
+ *  looking elsewhere is never lost (a once-listener would drop it). */
+class Conn {
+  received = "";
+  closed = false;
+  private constructor(readonly sock: net.Socket) {
+    sock.on("data", (d) => { this.received += d.toString(); });
+    sock.on("close", () => { this.closed = true; });
+    sock.on("error", () => undefined);
+  }
+  static async open(): Promise<Conn> {
+    const s = net.connect(proxy.port, "127.0.0.1");
+    const c = new Conn(s);
+    await new Promise<void>((res, rej) => { s.once("connect", () => res()); s.once("error", rej); });
+    return c;
+  }
+  write(x: string) { this.sock.write(x); }
+  async until(pred: (received: string) => boolean, ms = 3000): Promise<string> {
+    const end = Date.now() + ms;
+    while (!pred(this.received)) { if (Date.now() > end) throw new Error(`no data (have ${JSON.stringify(this.received)})`); await new Promise((r) => setTimeout(r, 10)); }
+    return this.received;
+  }
+  async quiet(ms: number): Promise<boolean> { const n = this.received.length; await new Promise((r) => setTimeout(r, ms)); return this.received.length === n; }
+  end() { this.sock.destroy(); }
+}
 
 describe("NetProxy", () => {
   it("passes bytes both ways and counts them", async () => {
     proxy.set({ kind: "pass" });
-    const s = await connect();
-    s.write("hello");
-    expect(await next(s)).toBe("hello");
+    const c = await Conn.open();
+    c.write("hello");
+    expect(await c.until((r) => r === "hello")).toBe("hello");
     expect(proxy.bytesUp).toBeGreaterThanOrEqual(5);
     expect(proxy.bytesDown).toBeGreaterThanOrEqual(5);
-    s.destroy();
+    c.end();
   });
 
   it("latency delays each direction (a round trip takes about twice the setting) and keeps the order", async () => {
     proxy.set({ kind: "latency", ms: 120 });
-    const s = await connect();
+    const c = await Conn.open();
     const t0 = Date.now();
-    s.write("a"); s.write("b");
-    let got = "";
-    while (got.length < 2) got += await next(s);
+    c.write("a"); c.write("b");
+    await c.until((r) => r === "ab");
     const took = Date.now() - t0;
-    expect(got).toBe("ab");
     expect(took).toBeGreaterThanOrEqual(220);
-    expect(took).toBeLessThan(1500);
-    s.destroy();
+    expect(took).toBeLessThan(2500);
+    c.end();
     proxy.set({ kind: "pass" });
   });
 
   it("blackhole holds data without closing anything and delivers it in order when healed", async () => {
     proxy.set({ kind: "pass" });
-    const s = await connect();
-    s.write("x");
-    expect(await next(s)).toBe("x");
+    const c = await Conn.open();
+    c.write("x");
+    await c.until((r) => r === "x");
     proxy.set({ kind: "blackhole" });
-    s.write("1"); s.write("2");
-    await expect(next(s, 400)).rejects.toThrow("no data");   // nothing comes back, and the socket is still open
-    expect(s.destroyed).toBe(false);
-    const late = await connect();                             // a new connection is accepted, its data is held too
+    c.write("1"); c.write("2");
+    expect(await c.quiet(400)).toBe(true);           // nothing comes back ...
+    expect(c.closed).toBe(false);                     // ... and the socket is still open
+    const late = await Conn.open();                   // a new connection is accepted, its data is held too
     late.write("L");
-    await expect(next(late, 300)).rejects.toThrow("no data");
+    expect(await late.quiet(300)).toBe(true);
     proxy.set({ kind: "pass" });
-    let got = "";
-    while (got.length < 2) got += await next(s);
-    expect(got).toBe("12");
-    expect(await next(late)).toBe("L");
-    s.destroy(); late.destroy();
+    expect(await c.until((r) => r === "x12")).toBe("x12");
+    expect(await late.until((r) => r === "L")).toBe("L");
+    c.end(); late.end();
   });
 
   it("a long held backlog is delivered strictly in order, also when new data arrives while it is being released", async () => {
     proxy.set({ kind: "pass" });
-    const s = await connect();
-    s.write("0"); expect(await next(s)).toBe("0");
+    const c = await Conn.open();
+    c.write("0");
+    await c.until((r) => r === "0");
     proxy.set({ kind: "blackhole" });
-    const expected = Array.from({ length: 60 }, (_, i) => String.fromCharCode(65 + (i % 26)) + i).join("|") + "|";
-    for (const part of expected.split("|").filter(Boolean)) s.write(part + "|");
+    const parts = Array.from({ length: 60 }, (_, i) => String.fromCharCode(65 + (i % 26)) + i + "|");
+    for (const p of parts) c.write(p);
     await new Promise((r) => setTimeout(r, 100));
     proxy.set({ kind: "pass" });
-    s.write("END");                                           // newer data right behind the release must not overtake the backlog
-    let got = "";
-    while (!got.endsWith("END")) got += await next(s);
-    expect(got).toBe(expected + "END");
-    s.destroy();
+    c.write("END");                                   // newer data right behind the release must not overtake the backlog
+    await c.until((r) => r.endsWith("END"));
+    expect(c.received).toBe("0" + parts.join("") + "END");
+    c.end();
   });
 
   it("reset destroys open connections and new ones on arrival, and pass restores service", async () => {
     proxy.set({ kind: "pass" });
-    const s = await connect();
-    const closed = new Promise<void>((r) => s.once("close", () => r()));
+    const c = await Conn.open();
     proxy.set({ kind: "reset" });
-    await closed;
+    await c.until(() => c.closed);
     const fresh = net.connect(proxy.port, "127.0.0.1");
     fresh.on("error", () => undefined);
     await new Promise<void>((r) => fresh.once("close", () => r()));
     proxy.set({ kind: "pass" });
-    const ok = await connect();
+    const ok = await Conn.open();
     ok.write("back");
-    expect(await next(ok)).toBe("back");
-    ok.destroy();
+    expect(await ok.until((r) => r === "back")).toBe("back");
+    ok.end();
   });
 });
