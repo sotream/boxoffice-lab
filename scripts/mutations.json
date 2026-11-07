@@ -578,5 +578,27 @@
       "counts messages that were published"
     ],
     "description": "the DLQ counter is never incremented"
+  },
+  {
+    "id": "gw-method-405",
+    "package": "@boxoffice/gateway",
+    "file": "services/gateway/src/gateway.service.ts",
+    "find": "if (method !== \"POST\") return { status: 405,",
+    "replace": "if (false) return { status: 405,",
+    "expectFailingTests": [
+      "POST-only"
+    ],
+    "description": "holds and confirms accept any method and skip the identity check"
+  },
+  {
+    "id": "pay-int4-bound",
+    "package": "@boxoffice/payments",
+    "file": "services/payments/src/payments.controller.ts",
+    "find": " && (x as number) <= INT4_MAX",
+    "replace": "",
+    "expectFailingTests": [
+      "is a 400"
+    ],
+    "description": "ids beyond int4 pass validation and the card is charged before inventory fails"
   }
 ]
