@@ -14,6 +14,10 @@ services:
   redis:
     image: redis:7-alpine
     ports: ["56379:6379"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
+      interval: 2s
+      retries: 20
   redpanda:
     image: redpandadata/redpanda:v26.2.6
     command:
@@ -26,6 +30,10 @@ services:
       - --kafka-addr=PLAINTEXT://0.0.0.0:59092
       - --advertise-kafka-addr=PLAINTEXT://localhost:59092
     ports: ["59092:59092"]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -qE 'Healthy:[[:space:]]+true'"]
+      interval: 2s
+      retries: 20
 
   # Optional observability stack. Not started by default: `docker compose up -d` is unchanged.
   # Start with: docker compose --profile observability up -d prometheus grafana   (services run on the host, see ops/prometheus.yml)

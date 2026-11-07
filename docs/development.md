@@ -13,6 +13,8 @@ pnpm build                # pnpm -r build: tsc in every package; services and th
 pnpm ops:check            # no infrastructure needed
 ```
 
+All three compose services have a healthcheck, so `docker compose ps` shows Postgres, Redis and Redpanda as healthy once they are ready, and scripts can wait for that with `docker compose up -d --wait`.
+
 Root scripts:
 
 | Script | What it does |
