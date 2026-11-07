@@ -164,3 +164,5 @@ All packages use one Postgres database and one Redis. The suites are written for
 | The real-time token bucket window test fails once | the Redis server clock stepped during the run | rerun; it assumes a monotonic clock |
 | A mutation run reports a build error instead of a kill | the mutation does not compile, or a different test run broke | the runner only counts a kill when a listed test name is in the output; check with `--only <id>` |
 | Port already in use when starting a service | a previous service or e2e child is still running | stop it; the notifications consumer survives a taken `OPS_PORT` but loses its probe endpoints |
+
+After a Redpanda image bump, a container recreated by Compose can fail with `incompatible logical version` because the old anonymous data volume is kept; `docker compose rm -sfv redpanda` removes the container and its volume (local lab data only), then `docker compose up -d --wait`.
