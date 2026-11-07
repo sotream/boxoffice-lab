@@ -4,7 +4,7 @@
 
 ## The key formula: admission rate
 admit/s = protected capacity x headroom / attempts per admitted user
-- `inventory` measured 2 654 hold RPS per instance (planning figure 2 600, rounded down). One instance, headroom 0.6 -> 1 560 holds/s (2 654 x 0.6 = 1 592 unrounded).
+- `inventory` measured 2 654 hold RPS per instance on the first version (planning figure 2 600, rounded down). Re-measured on the final code: 2 294, which gives 2 294 x 0.6 / 3 = ~459 users/s, so the configured 500 is now about 9% above the re-derived value; it was left unchanged pending a decision. One instance, headroom 0.6 -> 1 560 holds/s (2 654 x 0.6 = 1 592 unrounded).
 - An admitted user makes ~3 hold attempts (seat taken, try another) -> 1 560 / 3 = **~520 users/s** (2 654 x 0.6 / 3 = ~531 unrounded). The configured `ADMIT_PER_SECOND` stays at 500, deliberately a little below the derived value.
 - Drain time for the flash sale: 50 000 / 500 = **100 s** worst wait. That is the number to give the product owner.
 

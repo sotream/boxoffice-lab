@@ -9,7 +9,7 @@ Formulas live in `packages/capacity`. Assumptions are stated so you can change t
 - peak RPS = 150 000 / 60 = **2 500 RPS** (average day: 1M DAU x 2 holds / 86 400 = 23 RPS; peak factor ~100).
 
 ## Instances
-- Measured one Node instance: 2 654 hold RPS (see RESULTS.md); the planning figure is 2 600, rounded down.
+- Measured one Node instance: 2 654 hold RPS on the first version, 2 294 on the final code (PostgreSQL 18, instrumented, ordered locks; see RESULTS.md). The planning figure below (2 600) is rounded down from the first measurement; with the final code it would be 2 200.
 - instances = ceil(2 500 / (2 600 x 0.6)) = **2** (0.6 = headroom for GC, deploys, a failed node).
 - But the real limit is Postgres, not Node: all instances write to one primary.
 
