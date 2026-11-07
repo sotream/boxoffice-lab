@@ -31,6 +31,8 @@ export interface StackOptions {
   infra?: Infra;
   /** HOLD_SECONDS of inventory (default: the service's 600). */
   holdSeconds?: number;
+  /** The address under which payments reaches inventory, given inventory's real one (a network-fault proxy goes in between). */
+  inventoryUrlForPayments?: (inventoryUrl: string) => Promise<string>;
   /** Extra environment per service (applied last, so it can override the defaults). */
   env?: Partial<Record<Name, Record<string, string>>>;
 }
@@ -105,6 +107,7 @@ export class Stack {
 
     this.bridge = opts.infra ? new Tap(this.broker, this.userPrefix) : await Bridge.start(this.runId, this.userPrefix, opts.duplicateRate ?? 0.2, opts.seed ?? 1);
 
+    const paymentsInventoryUrl = opts.inventoryUrlForPayments ? await opts.inventoryUrlForPayments(this.urls.inventory) : this.urls.inventory;
     const dbg: Record<string, string> = opts.debugLogs ? { LOG_LEVEL: "debug" } : {};
     const db = { DATABASE_URL: this.dbUrl };
     this.envs.set("inventory", { PORT: String(this.ports.inventory), SEED_SEATS: String(opts.seats), ...(opts.holdSeconds ? { HOLD_SECONDS: String(opts.holdSeconds) } : {}), ...db, ...dbg, ...opts.env?.inventory });
@@ -114,7 +117,7 @@ export class Stack {
       ADMISSION_SECRET: SECRET, PAYMENTS_INTERNAL_TOKEN: INTERNAL_TOKEN, IP_RATE: "100000", IP_BURST: "100000", USER_RATE: "1000", USER_BURST: "1000", UPSTREAM_TIMEOUT_MS: "8000", ...dbg, ...opts.gatewayEnv, ...opts.env?.gateway
     });
     this.envs.set("payments", {
-      PORT: String(this.ports.payments), INVENTORY_URL: this.urls.inventory, KAFKA_BROKER: this.broker, ...db,
+      PORT: String(this.ports.payments), INVENTORY_URL: paymentsInventoryUrl, KAFKA_BROKER: this.broker, ...db,
       PAYMENTS_INTERNAL_TOKEN: INTERNAL_TOKEN, SEAT_PRICE_CENTS: String(SEAT_PRICE_CENTS), // the price is the server's: the clients' expectation (load.ts) must equal it
       PSP_LATENCY_MS: String(opts.pspLatencyMs ?? 50), PSP_FAIL_RATE: String(opts.pspFailRate ?? 0), ...dbg, ...opts.env?.payments
     });
