@@ -69,6 +69,9 @@ export class NetProxy {
       flush: () => {
         const ms = this.mode.kind === "latency" ? this.mode.ms : 0;
         const backlog = held.splice(0);
+        // without latency the backlog leaves in one write, as a real TCP stack sends what it has queued; one timer per chunk would turn a
+        // long partition with many small commands into a slow, artificial trickle (a timer is at least 1 ms)
+        if (ms === 0 && queued === 0) { if (backlog.length) deliver(Buffer.concat(backlog)); return; }
         for (const c of backlog) viaChain(c, ms);
       }
     };
