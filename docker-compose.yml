@@ -15,7 +15,7 @@ services:
     image: redis:7-alpine
     ports: ["56379:6379"]
   redpanda:
-    image: redpandadata/redpanda:v24.2.7
+    image: redpandadata/redpanda:v26.2.6
     command:
       - redpanda
       - start
