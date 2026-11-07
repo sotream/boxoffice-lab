@@ -40,6 +40,11 @@ export function registerOutboxGauges(pool: Pick<Pool, "query">): void {
  * status), so it is a sequential scan: cheap in the lab, something to replace with counters or a partial index at scale.
  */
 export function registerSagaGauge(pool: Pick<Pool, "query">): void {
+  const readOldest = cached(10_000, async () => Number((await pool.query("SELECT COALESCE(EXTRACT(EPOCH FROM now() - min(updated_at)), 0) AS age FROM payments.payments WHERE status IN ('PENDING','CHARGED','REFUNDING')")).rows[0].age));
+  gauge("payments_oldest_open_saga_age_seconds", "Seconds since the oldest unfinished saga (PENDING, CHARGED or REFUNDING) last changed; 0 when none. A charged payment that nobody can finish keeps growing.", [], async function () {
+    const age = await readOldest();
+    if (age !== undefined) this.set(age);
+  });
   const read = cached(10_000, async () => (await pool.query("SELECT status, count(*)::int AS n FROM payments.payments GROUP BY status")).rows as { status: string; n: number }[]);
   gauge("payments_sagas", "Payments by saga state (PENDING and CHARGED that stay non-zero are stuck sagas).", ["state"], async function () {
     const rows = await read();

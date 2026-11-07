@@ -79,10 +79,10 @@ export class PaymentsService {
     }
   }
 
-  /** Background sweeper: resume sagas stuck in PENDING/CHARGED/REFUNDING (timeout, crash). Safe to run on many instances: transitions are compare-and-set and the PSP is idempotent. */
   /** Called for every saga a sweep could not advance (timeout, provider error). Without it a saga that fails on every run is invisible. */
   onSweepError?: (id: number, err: unknown) => void;
 
+  /** Background sweeper: resume sagas stuck in PENDING/CHARGED/REFUNDING (timeout, crash). Safe to run on many instances: transitions are compare-and-set and the PSP is idempotent. */
   async sweep(olderThanSeconds = 3, limit = 200, parallel = 10): Promise<number> {
     const ids = (await this.pool.query(
       `SELECT id FROM payments.payments WHERE status IN ('PENDING','CHARGED','REFUNDING') AND updated_at < now() - make_interval(secs => $1) ORDER BY id LIMIT $2`,
