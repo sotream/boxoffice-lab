@@ -36,6 +36,31 @@ const MUTATIONS = [
   { id: "pay-no-sweeper", file: "services/payments/src/payments.service.ts", test: "src/chaos.e2e.test.ts -t 2001", evidence: "not quiescent",
     find: "async sweep(olderThanSeconds = 3, limit = 200, parallel = 10): Promise<number> {", replace: "async sweep(olderThanSeconds = 3, limit = 200, parallel = 10): Promise<number> {\n    if (olderThanSeconds >= 0) return 0;",
     what: "the sweeper never resumes stuck sagas (crash recovery removed)" },
+  // ---- fault suite (docker): breaks that only the outage/crash/expiry/multi-instance scenarios can notice ----
+  { id: "pay-connect-refund", faults: true, file: "services/payments/src/confirm-seats.ts", test: "src/faults/inventory-crash.fault.test.ts", evidence: "refund caused by the outage",
+    find: 'throw new StepTimeout("inventory unreachable or timed out");', replace: "return false;",
+    what: "payments treats a connect failure to inventory as 'seats lost' and refunds" },
+  { id: "pay-no-sweeper-crash", faults: true, file: "services/payments/src/payments.service.ts", test: "src/faults/inventory-crash.fault.test.ts", evidence: "not quiescent",
+    find: "async sweep(olderThanSeconds = 3, limit = 200, parallel = 10): Promise<number> {", replace: "async sweep(olderThanSeconds = 3, limit = 200, parallel = 10): Promise<number> {\n    if (olderThanSeconds >= 0) return 0;",
+    what: "the sweeper is disabled: sagas that hit the dead inventory stay CHARGED forever" },
+  { id: "relay-no-ack", faults: true, file: "services/payments/src/outbox-relay.ts", test: "src/faults/redpanda-outage.fault.test.ts", evidence: "rows marked published during the outage|relay errors during the outage",
+    find: "for (const [topic, msgs] of byTopic) await this.publish(topic, msgs);", replace: "for (const [topic, msgs] of byTopic) await this.publish(topic, msgs).catch(() => undefined);",
+    what: "relay marks rows published although the broker never acknowledged them" },
+  { id: "gw-fail-open-holds", faults: true, file: "services/gateway/src/gateway.service.ts", test: "src/faults/redis-outage.fault.test.ts -t stop", evidence: "while Redis is away",
+    find: "if (!failOpen) {", replace: "if (false) {",
+    what: "the gateway fails open on holds, pay and queue joins when Redis is down" },
+  { id: "inv-confirm-ignores-expiry", faults: true, file: "services/inventory/src/inventory.service.ts", test: "src/faults/hold-expiry.fault.test.ts", evidence: "late payment confirmed after the hold expired",
+    find: "AND ((status='held' AND hold_until >= now()) OR status='sold')", replace: "AND status IN ('held','sold')",
+    what: "inventory confirms a hold that has expired" },
+  { id: "inv-hold-no-reuse", faults: true, file: "services/inventory/src/inventory.service.ts", test: "src/faults/hold-expiry.fault.test.ts", evidence: "freed seats were reused",
+    find: "AND (status='free' OR (status='held' AND hold_until < now()))\n           ORDER BY seat_id FOR UPDATE)\n         UPDATE seats s SET", replace: "AND status='free'\n           ORDER BY seat_id FOR UPDATE)\n         UPDATE seats s SET",
+    what: "inventory never gives an expired hold's seats to somebody else" },
+  { id: "inv-error-as-conflict", faults: true, file: "services/inventory/src/inventory.controller.ts", test: "src/faults/inventory-db-lock.fault.test.ts", evidence: "refund caused by the outage",
+    find: 'catch (e) { confirms.inc({ result: "error" }); throw e; }', replace: 'catch { confirms.inc({ result: "error" }); throw new ConflictException("hold missing or expired"); }',
+    what: "inventory answers 409 ('hold expired') when Postgres fails during a confirm: payments refunds valid purchases" },
+  { id: "pay-cas-removed", faults: true, file: "services/payments/src/payments.service.ts", test: "src/faults/multi-instance.fault.test.ts", evidence: "not quiescent",
+    find: 'WHERE id=$1 AND status=$2", [id, from, to]', replace: 'WHERE id=$1 AND $2::text IS NOT NULL", [id, from, to]',
+    what: "state changes lose their compare-and-set: two sweepers both 'win' the same transition (two events per payment)" },
 ];
 
 const argv = process.argv.slice(2);
@@ -65,17 +90,17 @@ for (const m of MUTATIONS) {
   writeFileSync(path, text.replace(m.find, () => m.replace));
   const t0 = Date.now();
   const [file, ...rest] = m.test.split(" ");
-  const run = spawnSync("pnpm", ["exec", "vitest", "run", file, ...rest], { cwd: pkg, encoding: "utf8", maxBuffer: 64 << 20 });
+  const run = spawnSync("pnpm", ["exec", "vitest", "run", ...(m.faults ? ["-c", "vitest.faults.config.ts"] : []), file, ...rest], { cwd: pkg, encoding: "utf8", maxBuffer: 64 << 20 });
   restore();
   const out = (run.stdout ?? "") + (run.stderr ?? "");
   const failed = run.status !== 0;
-  const killed = failed && out.includes(m.evidence);
+  const killed = failed && m.evidence.split("|").some((e) => out.includes(e)); // several accepted spellings of the same evidence are separated by |
   results.push({ id: m.id, what: m.what, result: killed ? "KILLED" : failed ? "FAILED-OTHER-REASON" : "SURVIVED", seconds: Math.round((Date.now() - t0) / 1000) });
   console.log(JSON.stringify(results.at(-1)));
   const first = out.split("\n").find((l) => /^\s*[+-]?\s*"\(|AssertionError|not quiescent|Error:/.test(l));
   if (first) console.log("   evidence: " + first.trim().slice(0, 220));
 }
 // leave dist matching the restored sources
-for (const d of ["inventory", "payments", "notifications"]) execFileSync(join(root, "services", d, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.json"], { cwd: join(root, "services", d) });
+for (const d of ["inventory", "payments", "notifications", "gateway", "waiting-room"]) execFileSync(join(root, "services", d, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.json"], { cwd: join(root, "services", d) });
 console.log(results.every((r) => r.result === "KILLED") ? "all killed" : "SOME MUTATIONS NOT KILLED");
 process.exit(results.every((r) => r.result === "KILLED") ? 0 : 1);

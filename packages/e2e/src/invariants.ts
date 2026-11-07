@@ -34,8 +34,19 @@ export interface Report { violations: string[]; summary: Record<string, unknown>
  * Reads the databases directly and checks the end-to-end invariants against what the clients were told. Returns every violation
  * (never throws on the first), so a failing run shows the whole picture. Letters follow docs/e2e.md.
  */
-export async function checkInvariants(stack: Stack, load: LoadResult, opts: { seats: number; notificationSends?: number; notificationSuppressed?: number }): Promise<Report> {
+export interface CheckOptions {
+  seats: number; notificationSends?: number; notificationSuppressed?: number;
+  /** Hold duration of the run in seconds (default 600): a seat may be granted again after the first hold's time is over, never before. */
+  holdSeconds?: number;
+  /** Fault suite: a duplicate on the broker can only come from the relay itself (nothing injects any); when true, every outbox row must have exactly one copy. */
+  exactlyOnceOnBroker?: boolean | { /** Rows that were in flight when the broker went away: the relay may legitimately have sent them twice (ack lost, row not marked). */ exceptIds: number[] };
+  /** Outbox ids that were unpublished and committed at a known moment: they must appear on the topic in increasing id order. */
+  backlogIds?: number[];
+}
+
+export async function checkInvariants(stack: Stack, load: LoadResult, opts: CheckOptions): Promise<Report> {
   const v: string[] = [];
+  await stack.bridge.sync?.(); // private broker: read what is on the topic now
   const seats = await stack.q<SeatRow>(`SELECT seat_id, status, held_by FROM seats WHERE event_id=$1 ORDER BY seat_id`, [EVENT]);
   const pays = await stack.q<PaymentRow>(`SELECT id::text, idempotency_key, user_id, seat_ids, amount_cents, status, trace FROM payments.payments ORDER BY id`);
   const outbox = await stack.q<OutboxRow>(`SELECT id::text, payload, published_at FROM payments.outbox ORDER BY id`);
@@ -45,7 +56,17 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: { se
   const seatRow = new Map(seats.map((s) => [s.seat_id, s]));
 
   // ---- (a) no seat sold or held to two users --------------------------------------------------------------------------------
-  for (const [seat, users] of load.grants) if (users.length > 1) v.push(`(a) seat ${seat} was granted (HTTP 200) to ${users.length} users: ${users.join(",")}`);
+  // A second grant is legitimate only after the first hold ran out: the first hold lasts until (commit time + H) >= (request start + H), and the
+  // second grant is committed before its answer arrives, so answer(2nd) < request start(1st) + H proves an overlap. H defaults to 600 s.
+  const holdMs = (opts.holdSeconds ?? 600) * 1000;
+  let regrants = 0;
+  for (const [seat, gl] of load.grantsTimed) {
+    for (let i = 1; i < gl.length; i++) {
+      if (gl[i].end < gl[i - 1].start + holdMs) v.push(`(a) seat ${seat} was granted (HTTP 200) to ${gl.length} users: ${gl.map((g) => g.user).join(",")} (the second grant arrived ${gl[i - 1].start + holdMs - gl[i].end} ms before the first hold could have expired)`);
+      else regrants++;
+    }
+  }
+  let lostAnswerHolds = 0;
   if (seats.length !== opts.seats) v.push(`(a) seat table has ${seats.length} rows, expected ${opts.seats}`);
   const confirmedSeatOwner = new Map<number, string>();
   for (const p of pays.filter((x) => x.status === "CONFIRMED")) for (const s of p.seat_ids) {
@@ -54,8 +75,10 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: { se
   }
   // exact reference model: every seat must be exactly what the grants and the CONFIRMED payments imply
   for (const s of seats) {
-    const winner = (load.grants.get(s.seat_id) ?? [])[0];
+    const winner = (load.grantsTimed.get(s.seat_id) ?? []).at(-1)?.user; // the last grantee: earlier holds had expired
     const want = winner !== undefined && confirmedSeatOwner.get(s.seat_id) === winner ? "sold" : winner !== undefined ? "held" : "free";
+    // a hold whose answer was lost (crash, timeout) may exist in the database without the client knowing: that user is allowed to hold the seat
+    if (s.status === "held" && s.held_by !== null && load.ambiguous.get(s.seat_id)?.has(s.held_by) && s.held_by !== winner) { lostAnswerHolds++; continue; }
     if (s.status !== want || s.held_by !== (winner ?? null)) {
       v.push(`(a/b) seat ${s.seat_id}: db says ${s.status}/${s.held_by}, model says ${want}/${winner ?? "-"} (CONFIRMED payment owner: ${confirmedSeatOwner.get(s.seat_id) ?? "none"})`);
     }
@@ -83,6 +106,13 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: { se
     if (p.status !== r.payStatus) v.push(`client ${r.userId} saw ${r.payStatus}, the row says ${p.status}`);
     if (Number(p.id) !== r.paymentId) v.push(`client ${r.userId}: paymentId ${r.paymentId} != row ${p.id}`);
     if (r.twin && (r.twin.status !== r.payStatus || r.twin.paymentId !== r.paymentId)) v.push(`idempotency: the double submit of ${r.userId} gave ${JSON.stringify(r.twin)} and ${r.payStatus}/${r.paymentId}`);
+  }
+  // ---- (g) an admitted user cannot pay as somebody else: the gateway said 403 and nothing was charged -------------------------------
+  const impostors = load.records.filter((r) => r.impostor);
+  for (const r of impostors) {
+    if (r.impostor!.status !== 403) v.push(`(g) impostor ${r.userId} put ${r.impostor!.victim} in the pay body and got ${r.impostor!.status}, expected 403`);
+    if (payByKey.has(r.payKey)) v.push(`(g) impostor ${r.userId}: a payment row exists for its key although the gateway refused it`);
+    if (pays.some((p) => p.user_id === r.userId)) v.push(`(g) impostor ${r.userId} has a payment row`);
   }
   const clientPayers = load.records.filter((r) => r.payStatus !== undefined).length;
   if (pays.length !== clientPayers) v.push(`${pays.length} payment rows but ${clientPayers} clients paid (one Idempotency-Key must give exactly one row)`);
@@ -123,6 +153,15 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: { se
   for (const e of stack.bridge.seen) seen.set(e.outboxId, (seen.get(e.outboxId) ?? 0) + 1);
   for (const o of outbox) if (!seen.has(Number(o.id))) v.push(`(d/e) outbox ${o.id} is marked published but the broker never carried it`);
   const kafkaDuplicates = [...seen.values()].reduce((n, c) => n + (c - 1), 0);
+  if (opts.exactlyOnceOnBroker) {
+    const except = new Set(typeof opts.exactlyOnceOnBroker === "object" ? opts.exactlyOnceOnBroker.exceptIds : []);
+    for (const [id, n] of seen) if (n > 1 && !except.has(id)) v.push(`(d) outbox ${id} reached the broker ${n} times`);
+  }
+  if (opts.backlogIds) {
+    const order = stack.bridge.seen.map((e) => e.outboxId).filter((id, i, a) => a.indexOf(id) === i && opts.backlogIds!.includes(id));
+    for (let i = 1; i < order.length; i++) if (order[i] < order[i - 1]) v.push(`(d) the backlog was published out of order: outbox ${order[i - 1]} before ${order[i]}`);
+    if (order.length !== opts.backlogIds.length) v.push(`(d) ${opts.backlogIds.length} backlog rows, ${order.length} of them on the broker`);
+  }
   const dlq = await stack.bridge.dlqSize();
   if (dlq !== 0) v.push(`(e) the dead-letter topic holds ${dlq} messages`);
 
@@ -167,8 +206,8 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: { se
   return {
     violations: v,
     summary: {
-      users: load.records.length, payments: pays.length, confirmed: count("CONFIRMED"), refunded: count("REFUNDED"), failed: count("FAILED"),
-      seatsSold: sold.size, seatsHeld: seats.filter((s) => s.status === "held").length, seatsFree: seats.filter((s) => s.status === "free").length,
+      users: load.records.length, impostors: impostors.length, impostors403: impostors.filter((r) => r.impostor!.status === 403).length, payments: pays.length, confirmed: count("CONFIRMED"), refunded: count("REFUNDED"), failed: count("FAILED"),
+      regrants, lostAnswerHolds, seatsSold: sold.size, seatsHeld: seats.filter((s) => s.status === "held").length, seatsFree: seats.filter((s) => s.status === "free").length,
       confirmedCents: confirmedSum, outboxEvents: outbox.length, deliveries: deliveries.length, kafkaDuplicates, notificationSends: opts.notificationSends, notificationSuppressed: opts.notificationSuppressed,
       http: Object.fromEntries([...load.stats].sort()), loadMs: load.finishedAt - load.startedAt
     }

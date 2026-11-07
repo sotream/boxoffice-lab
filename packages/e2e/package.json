@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:faults": "vitest run -c vitest.faults.config.ts"
   },
   "dependencies": {
     "@boxoffice/admission": "workspace:*",

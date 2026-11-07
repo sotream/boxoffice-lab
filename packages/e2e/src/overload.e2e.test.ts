@@ -21,7 +21,7 @@ afterAll(async () => { await stack?.stop(); }, 60_000);
 describe("scenario 3: more concurrent holds than the gateway limiter allows", () => {
   it("429 carries Retry-After, nothing answers 5xx, the per-user limit bounds admitted holds, and the invariants still hold", async () => {
     const load = await runLoad({
-      seed: 3001, users: USERS, seats: SEATS, gateway: stack.urls.gateway, holdGateway: overloaded, paymentsUrl: stack.urls.payments,
+      seed: 3001, users: USERS, seats: SEATS, gateway: stack.urls.gateway, holdGateway: overloaded,
       concurrency: USERS, holdStorm: STORM, mix: { abandoner: 0.1, cheater: 0.05, doubleSubmit: 0.1 }
     }, stack.runId);
     const st = (k: string) => load.stats.get(k) ?? 0;

@@ -31,7 +31,7 @@
 
 > **Status:** a learning and design lab, not a production system. Its known gaps are listed in [Limits of this lab](#limits-of-this-lab) and in [SECURITY.md](SECURITY.md).
 
-| 6 services | 14 ADRs | 5 failure drills | 52 mutations, 52 killed | 5 paper designs |
+| 6 services | 15 ADRs | 5 failure drills | 59 mutations, 59 killed | 5 paper designs |
 |:---:|:---:|:---:|:---:|:---:|
 | inventory, waiting-room, gateway, payments, notifications, catalog | [indexed with status](docs/adr-index.md) | broker, cache, consumer, provider down or slow; DLQ replay | [mutation check of the tests](docs/testing.md#mutation-check) | URL shortener, feed, ledger, ingestion, file pipeline |
 
@@ -56,8 +56,8 @@ The headline claims are correctness claims, and each has a test that tries to br
 | The payments saga never double-charges, double-refunds or loses an event, whatever crashes | crash injected at 8 boundaries, a reusable PSP contract suite, model-based test with random crashes and 1 to 4 concurrent runners; `REFUNDING` is claimed before the refund ([ADR 005](services/payments/adr/005-claim-refund-before-issuing-it.md)) | `pnpm --filter @boxoffice/payments test` |
 | Notifications are delivered at least once with no duplicate effects; poison messages never block a partition | random duplicates, redeliveries and flaky providers; the real consumer against a fake broker | `pnpm --filter @boxoffice/notifications test` |
 | The cache never serves wrong data | TTL jitter bounds, unambiguous keys, input fuzz with no 5xx | `pnpm --filter @boxoffice/catalog test` |
-| The tests themselves catch real breakage | a dependency-free mutation runner breaks the production code one way at a time and requires a named test to fail: 52 mutations in `scripts/mutations.json`, 52 killed on the last run (2026-11-06) | `pnpm test:mutation` (about 8 minutes, edits and restores source files) |
-| The whole pipeline keeps its invariants, including through `kill -9` | `packages/e2e` starts the real built services as processes (private Postgres database, Redis logical DB and Kafka topic), runs a 300-user flash sale, the same sale with `kill -9` of payments and of the notifications consumer, and a limiter-overload storm, then reads the databases: no seat sold twice, sold seats equal confirmed payments, money conserved, one outbox event per payment, no duplicate deliveries, request id present end to end. It found a bug no unit test had: every real event was dead-lettered because the outbox id was a string. Details and limits: [docs/e2e.md](docs/e2e.md) | `pnpm test:e2e` (about 2.5 minutes, needs Redpanda) |
+| The tests themselves catch real breakage | a dependency-free mutation runner breaks the production code one way at a time and requires a named test to fail: 59 mutations in `scripts/mutations.json`, all killed (52 on 2026-11-06; the 7 for payments authentication, price, key scoping and the gateway `/pay` route on 2026-11-07) | `pnpm test:mutation` (about 8 minutes, edits and restores source files) |
+| The whole pipeline keeps its invariants, including through `kill -9` | `packages/e2e` starts the real built services as processes (private Postgres database, Redis logical DB and Kafka topic), runs a 300-user flash sale, the same sale with `kill -9` of payments and of the notifications consumer, and a limiter-overload storm, then reads the databases: no seat sold twice, sold seats equal confirmed payments, money conserved, one outbox event per payment, no duplicate deliveries, request id present end to end. A second, docker-based fault suite repeats the invariants through `kill -9` of inventory, gateway and waiting-room, Postgres paused and stopped, Redpanda stopped, Redis stopped and paused, hold expiry and two instances of gateway, payments and inventory, on private containers it creates and removes itself. Between them they found two bugs no unit test had: every real event was dead-lettered because the outbox id was a string, and `docker stop` of Postgres under load killed inventory (an unhandled `error` on a checked-out connection). Details and limits: [docs/e2e.md](docs/e2e.md) | `pnpm test:e2e` (about 2.5 minutes, needs Redpanda), `pnpm test:e2e:faults` (about 6 minutes, needs docker) |
 | The system degrades the way the docs say | five failure drills with raw output saved in [`docs/drill-output/`](docs/drill-output/) | [docs/failure-drills.md](docs/failure-drills.md) |
 | Alert rules and runbooks match the code | `pnpm ops:check` fails if an alert names a metric or label no service defines, or the metric table is stale | `pnpm ops:check` |
 
@@ -113,6 +113,7 @@ pnpm build                # compile every package; services and load scripts run
 pnpm ops:check            # alert rules, runbooks and metric table agree with the code (no infrastructure needed)
 pnpm test                 # all packages, one after another (they share one Postgres and one Redis)
 pnpm test:e2e             # system-level end-to-end and chaos run, about 2.5 minutes, needs Redpanda (docs/e2e.md)
+pnpm test:e2e:faults      # outages, crashes, hold expiry, two instances, on private docker containers, about 6 minutes (docs/e2e.md)
 ```
 
 Run the system (one terminal each, after `pnpm build`; ports in the next table):
@@ -126,13 +127,13 @@ pnpm --filter @boxoffice/notifications start                # needs Redpanda
 SEED_EVENTS=1000 pnpm --filter @boxoffice/catalog start     # truncates and seeds catalog.events
 ```
 
-A purchase through the gateway, then a payment (payments is called directly; the gateway does not route it):
+A purchase through the gateway, including the payment (payments is internal: only the gateway calls it, with the shared `x-internal-token`):
 
 ```bash
 curl -s -X POST localhost:3100/events/1/queue/join -H 'content-type: application/json' -d '{"userId":"alice"}'
 curl -s 'localhost:3100/events/1/queue/status?userId=alice'      # {"state":"admitted","ttl":...,"token":"..."} within a moment
 curl -s -X POST localhost:3100/events/1/holds -H 'content-type: application/json' -H "x-admission: $TOKEN" -d '{"seatIds":[1,2],"userId":"alice"}'
-curl -s -X POST localhost:3103/payments -H 'content-type: application/json' -H 'Idempotency-Key: k1' -d '{"eventId":1,"userId":"alice","seatIds":[1,2],"amountCents":5000}'   # CONFIRMED
+curl -s -X POST localhost:3100/events/1/pay -H 'content-type: application/json' -H "x-admission: $TOKEN" -H 'Idempotency-Key: k1' -d '{"userId":"alice","seatIds":[1,2]}'   # CONFIRMED; the price (2 x SEAT_PRICE_CENTS) is computed by payments
 curl -s localhost:3106/readyz; curl -s localhost:3101/metrics | head
 ```
 
@@ -158,10 +159,10 @@ Load scripts and drills write to the shared databases and stop containers: do no
 
 | Service | Port | Business endpoints | Ops endpoints |
 |---|---|---|---|
-| gateway | 3100 | `/events/:id/queue/join`, `/events/:id/queue/status`, `/events/:id/availability`, `/events/:id/holds`, `/events/:id/confirm` | none on 3100; ops endpoints on 3106 (`OPS_PORT`) |
+| gateway | 3100 | `/events/:id/queue/join`, `/events/:id/queue/status`, `/events/:id/availability`, `/events/:id/holds`, `/events/:id/confirm`, `POST /events/:id/pay` | none on 3100; ops endpoints on 3106 (`OPS_PORT`) |
 | inventory | 3101 | `POST /events/:id/holds`, `POST /events/:id/confirm`, `GET /events/:id/availability` | same |
 | waiting-room | 3102 | `POST /events/:id/queue/join`, `GET /events/:id/queue/status` | same |
-| payments | 3103 | `POST /payments` (header `Idempotency-Key`), `POST /admin/psp` (only with `PSP_ADMIN=1`) | same |
+| payments | 3103 | `POST /payments` (headers `Idempotency-Key` and `x-internal-token`; internal, reached through the gateway's `/pay`), `POST /admin/psp` (only with `PSP_ADMIN=1`, also needs `x-internal-token`) | same, no token needed |
 | catalog | 3104 | `GET /search`, `GET /events/:id` | same |
 | notifications | 3105 (`OPS_PORT`) | none: Kafka consumer | `/healthz` `/readyz` `/metrics` only |
 | Postgres / Redis / Redpanda | 55432 / 56379 / 59092 | | |
@@ -171,7 +172,7 @@ Load scripts and drills write to the shared databases and stop containers: do no
 
 ## Environment variables
 
-Each service validates its environment at start and exits with code 78 and one message listing every problem. With `NODE_ENV=production`, `ADMISSION_SECRET` must be set and must not be `dev-secret` (gateway and waiting-room refuse to start otherwise). Per-service tables with defaults are in each service README; the main ones:
+Each service validates its environment at start and exits with code 78 and one message listing every problem. With `NODE_ENV=production`, `ADMISSION_SECRET` must be set and must not be `dev-secret` (gateway and waiting-room refuse to start otherwise), and `PAYMENTS_INTERNAL_TOKEN` must be set and must not be `dev-internal-token` (gateway and payments). Per-service tables with defaults are in each service README; the main ones:
 
 | Variable | Used by | Default |
 |---|---|---|
@@ -182,12 +183,14 @@ Each service validates its environment at start and exits with code 78 and one m
 | `PG_POOL` | inventory, payments, catalog | 20 |
 | `REDIS_URL` | gateway, waiting-room, catalog | `redis://localhost:56379` |
 | `KAFKA_BROKER` | payments, notifications | `localhost:59092` |
-| `INVENTORY_URL`, `QUEUE_URL` | gateway (both), payments (`INVENTORY_URL`) | `http://localhost:3101`, `http://localhost:3102` |
+| `INVENTORY_URL`, `QUEUE_URL`, `PAYMENTS_URL` | gateway (all three), payments (`INVENTORY_URL`) | `http://localhost:3101`, `http://localhost:3102`, `http://localhost:3103` |
 | `ADMISSION_SECRET` | gateway, waiting-room (must match) | `dev-secret` (refused in production) |
+| `PAYMENTS_INTERNAL_TOKEN` | gateway, payments (must match) | `dev-internal-token` (refused in production) |
 | `TRUST_PROXY` | gateway | empty: `x-forwarded-for` from clients is ignored; set the load balancer's addresses or CIDRs to use it |
 | `IP_RATE` `IP_BURST` `USER_RATE` `USER_BURST` `UPSTREAM_TIMEOUT_MS` | gateway | 50, 100, 5, 10, 2000 |
 | `ADMIT_PER_SECOND` | waiting-room | 500 |
 | `PSP_LATENCY_MS` `PSP_FAIL_RATE` `PSP_TIMEOUT_MS` `CONFIRM_TIMEOUT_MS` `PSP_ADMIN` | payments | 100, 0, 2000, 2000, off |
+| `SEAT_PRICE_CENTS` | payments | 5000 (price of one seat; the server computes the amount) |
 | `CACHE_TTL` (seconds) | catalog | 30 |
 | `SEED_SEATS`, `SEED_EVENTS` | inventory, catalog (seed at start, destructive for those tables) | 0 |
 | `TOPIC` `GROUP_ID` `CONCURRENCY` `SENDER_LATENCY_MS` | notifications | `payments`, `notifications`, 25, 20 |
@@ -200,7 +203,7 @@ Each service validates its environment at start and exits with code 78 and one m
 services/
   inventory/      seat holds, confirm, availability (Postgres)
   waiting-room/   virtual queue (Redis)
-  gateway/        rate limiter and admission-token check (Fastify, Redis)
+  gateway/        rate limiter, admission-token check, the only route to payments (Fastify, Redis)
   payments/       saga, idempotency, outbox relay, sweeper (Postgres, Kafka)
   notifications/  consumer, dedup, retries, DLQ (Kafka, Postgres)
   catalog/        search, cache-aside (Postgres FTS, Redis)
@@ -213,7 +216,7 @@ ops/              prometheus.yml, alerts.yml, grafana/, check.mjs (consistency c
 scripts/          mutation-check.mjs, mutations.json
 drills/           failure drills (node scripts)
 docs/             playbook/, adr-index, operations, testing, development, failure-drills,
-                  numbers-to-know, interview-template, img/, drill-output/, load-output/
+                  numbers-to-know, benchmarks, interview-template, img/, drill-output/, load-output/
 docker-compose.yml, .github/workflows/ci.yml
 ```
 
@@ -245,14 +248,15 @@ CI (`.github/workflows/ci.yml`): Postgres 18 and Redis 7 as service containers, 
 
 ## Limits of this lab
 
-- Everything runs on one MacBook Air M1: server, Postgres, Redis, Redpanda and k6 share the machine, so the numbers are conservative and noisy.
+- Everything runs on one MacBook Air M1: server, Postgres, Redis, Redpanda and k6 share the machine, so the numbers are conservative and noisy. [docs/benchmarks.md](docs/benchmarks.md) repeats the runs (median, min, max) with `scripts/bench.sh` and has a manually dispatched workflow for a second environment (GitHub-hosted runner).
 - Postgres: the compose file, CI and the full test suite run on PostgreSQL 18. The load figures in the `RESULTS.md` files and `CAPACITY.md` files were measured on PostgreSQL 17, before the metrics and logging of `@boxoffice/platform` existed, and have not been re-measured; each of those files says so at the top. The comparison between versions is an open item. The only measured cost of the instrumentation is a micro-benchmark on a route that does no work, 15 to 25% of throughput ([operations.md](docs/operations.md#overhead)); no service-level load run was repeated with it.
 - Payments: the 561 and 904 payments/s figures were taken on the compensation path before the `REFUNDING` claim added a commit to it (ADR 005); they are marked to-be-remeasured in [payments CAPACITY](services/payments/CAPACITY.md).
 - The figures are per-instance planning numbers for the capacity formulas, not production claims. Re-measure on target hardware.
 - The SLO targets and alert thresholds in [operations.md](docs/operations.md) are proposals, not calibrated against production traffic. There is no tracing backend: trace ids are propagated and logged, spans are not exported.
-- The mutation check covers inventory, waiting-room, gateway, admission, capacity, catalog, notifications and the payments saga (52 mutations); it deliberately does not mutate `packages/platform` and the service bootstraps (`main.ts`, `db.ts`, `app.module.ts`), which are wiring covered by the spawned-process tests.
-- No multi-node setup was tested: no Redis failover, no Postgres replicas, no real network between services.
+- The mutation check covers inventory, waiting-room, gateway, admission, capacity, catalog, notifications and the payments saga, authentication and price (59 mutations); it deliberately does not mutate `packages/platform` and the service bootstraps (`main.ts`, `db.ts`, `app.module.ts`), which are wiring covered by the spawned-process tests.
+- No multi-node setup was tested: no Redis failover, no Postgres replicas, no real network between services. The fault suite injects clean faults on single private nodes (process kill, container stop or pause); it does not cover real network partitions, packet loss or latency injection, disk full, clock skew or failover, and its two-instance scenario shares one fake PSP per process ([docs/e2e.md](docs/e2e.md#known-limits)).
 - OpenSearch/Elasticsearch was not run; the catalog ADR argues from its documented trade-offs, not from measurements.
+- Security: payments is reachable only with a shared secret (`x-internal-token`), which is not mTLS; seat-hold ownership is checked only at confirm, so an authenticated user can pay for seats another user holds (charged, then refunded). See [SECURITY.md](SECURITY.md) and [payments ADR 006](services/payments/adr/006-internal-authentication-and-server-side-price.md).
 - The gateway is plain Fastify standing in for Envoy or Kong; the PSP and email providers are fakes with fixed latency.
 - Admission is a fixed budget, not adaptive to inventory latency, and the admission tick serves event 1 only.
 

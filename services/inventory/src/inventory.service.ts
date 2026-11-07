@@ -1,18 +1,20 @@
-import { Inject, Injectable } from "@nestjs/common";
+import { Inject, Injectable, Optional } from "@nestjs/common";
 import { Pool } from "pg";
 
 export type Strategy = "for-update" | "atomic-update";
 export type HoldResult = { ok: true; seatIds: number[]; holdUntil: Date } | { ok: false; reason: "unavailable" };
 
 export const PG = "PG_POOL";
+/** Default hold duration; `HOLD_SECONDS` in the environment overrides it (read in app.module.ts, validated in main.ts). */
 export const HOLD_SECONDS = 600;
+export const HOLD_TTL = "HOLD_TTL_SECONDS";
 
 @Injectable()
 export class InventoryService {
-  constructor(@Inject(PG) private readonly pool: Pool) {}
+  constructor(@Inject(PG) private readonly pool: Pool, @Optional() @Inject(HOLD_TTL) private readonly holdSeconds: number = HOLD_SECONDS) {}
 
   /**
-   * Hold seats for HOLD_SECONDS. All-or-nothing.
+   * Hold seats for `holdSeconds` (default HOLD_SECONDS). All-or-nothing.
    * - atomic-update: one UPDATE ... WHERE free-or-expired RETURNING, compare row count. No explicit lock round trip.
    * - for-update: SELECT ... FOR UPDATE (ordered, to avoid deadlocks), check, then UPDATE. Two round trips, holds locks longer.
    */
@@ -37,7 +39,7 @@ export class InventoryService {
          UPDATE seats s SET status='held', held_by=$3, hold_until = now() + make_interval(secs => $4)
          FROM locked WHERE s.event_id=$1 AND s.seat_id = locked.seat_id
          RETURNING s.hold_until`,
-        [eventId, ids, userId, HOLD_SECONDS]
+        [eventId, ids, userId, this.holdSeconds]
       );
       if (res.rowCount !== ids.length) {
         await client.query("ROLLBACK");
@@ -71,7 +73,7 @@ export class InventoryService {
       const upd = await client.query(
         `UPDATE seats SET status='held', held_by=$3, hold_until = now() + make_interval(secs => $4)
          WHERE event_id=$1 AND seat_id = ANY($2) RETURNING hold_until`,
-        [eventId, ids, userId, HOLD_SECONDS]
+        [eventId, ids, userId, this.holdSeconds]
       );
       await client.query("COMMIT");
       return { ok: true, seatIds: ids, holdUntil: upd.rows[0].hold_until };

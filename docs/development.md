@@ -52,13 +52,23 @@ The drills are plain Node scripts in `drills/` (results and context: [failure-dr
 docker compose up -d
 pnpm build
 node drills/redis-down.mjs      # needs inventory 3101, waiting-room 3102, gateway 3100 running
-node drills/kafka-down.mjs      # needs inventory 3101, payments 3103 running
+node drills/kafka-down.mjs      # needs inventory 3101, payments 3103 running (the drills send PAYMENTS_INTERNAL_TOKEN, default dev-internal-token)
 node drills/consumer-kill.mjs   # starts and kills its own consumers (notifications built)
 node drills/slow-psp.mjs 20000  # needs inventory 3101 and payments 3103 started with PSP_ADMIN=1
 node drills/dlq-replay.mjs      # needs the notifications package built; runs its own consumer
 ```
 
 Timings vary between runs on a laptop; the drills assert invariants (no lost events, no duplicates, no errors on the fail-open route). The saved outputs are in `docs/drill-output/`.
+
+## Running the fault suite (outages, crashes, hold expiry, several instances)
+
+`pnpm test:e2e:faults` runs the scenarios of [e2e.md](e2e.md#fault-suite-pnpm-teste2efaults) in `packages/e2e/src/faults/`. It needs the docker CLI and `pnpm -r build`, and takes about 6 minutes. Unlike the failure drills above it does **not** touch the compose containers or the shared databases: every scenario starts private Postgres, Redis and Redpanda containers (`boxoffice-e2e-<pid>-<n>-<kind>`, random ports, the images of `docker-compose.yml`), stops, pauses or kills those, and removes them again; a leftover container fails the run. If a run is killed hard and containers remain, the next run removes those whose owner pid is gone, or remove them by hand:
+
+```bash
+docker ps -a --filter name=boxoffice-e2e- --format '{{.Names}}'
+docker rm -f -v $(docker ps -aq --filter name=boxoffice-e2e-)
+pnpm --filter @boxoffice/e2e exec vitest run -c vitest.faults.config.ts redis-outage   # one scenario
+```
 
 ## Running the load scripts
 
@@ -67,6 +77,7 @@ Commands and variables per service are in the [README quick start](../README.md#
 - `load/run.sh` of inventory and catalog start the service themselves and seed data (100 000 seats for event 1; 200 000 catalog events): they overwrite those tables.
 - The catalog script uses the container name `boxoffice-lab-redis-1`.
 - k6 and the server share the machine in the saved runs, so latency under a high VU count is dominated by the load generator; compare like with like and read the caveats in each `RESULTS.md`.
+- `scripts/bench.sh <scenario> [runs]` runs the same k6 scripts several times and reports median, min and max; method and results: [benchmarks.md](benchmarks.md).
 - Saved raw output is in `docs/load-output/`. The figures in the `RESULTS.md` files predate the platform instrumentation and were measured on PostgreSQL 17; a new run on the current stack is a new measurement, not a confirmation.
 
 ## Writing a property test

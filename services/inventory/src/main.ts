@@ -5,13 +5,14 @@ import { createPool as createSharedPool, createShutdown, drainHttp, initService,
 import { Pool } from "pg";
 import { AppModule } from "./app.module";
 import { createPool, migrate, seed } from "./db";
-import { PG } from "./inventory.service";
+import { HOLD_SECONDS, PG } from "./inventory.service";
 
 async function bootstrap() {
   const log = initService("inventory");
   const cfg = loadConfigOrExit((e) => ({
     port: e.port("PORT", 3101),
     pgPool: e.int("PG_POOL", 20, { min: 1 }),
+    holdSeconds: e.int("HOLD_SECONDS", HOLD_SECONDS, { min: 1 }), // read again by app.module.ts; validated here so a bad value exits 78
     seedSeats: e.int("SEED_SEATS", 0, { min: 0 }),
     shutdown: shutdownEnv(e)
   }));

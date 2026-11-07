@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createPool, migrate, seed } from "./db";
-import { InventoryService, Strategy } from "./inventory.service";
+import { HOLD_SECONDS, InventoryService, Strategy } from "./inventory.service";
 
 const pool = createPool(50);
 const svc = new InventoryService(pool);
@@ -69,5 +69,24 @@ describe("lifecycle", () => {
     await svc.hold(EVENT, [9], "a");
     await pool.query("UPDATE seats SET hold_until = now() - interval '1 second' WHERE event_id=$1 AND seat_id=9", [EVENT]);
     expect(await svc.confirm(EVENT, [9], "a")).toBe(false);
+  });
+});
+
+describe("hold duration (HOLD_SECONDS)", () => {
+  it("defaults to 600 s and follows the configured value, for both strategies and for expiry", async () => {
+    const e = 901;
+    await seed(pool, e, 6);
+    const def = await svc.hold(e, [1], "a");
+    expect(def.ok && Math.round((def.holdUntil.getTime() - Date.now()) / 1000)).toBe(HOLD_SECONDS);
+    const short = new InventoryService(pool, 1);
+    for (const [strategy, seat] of [["atomic-update", 2], ["for-update", 3]] as const) {
+      const r = await short.hold(e, [seat], "b", strategy);
+      expect(r.ok && Math.round((r.holdUntil.getTime() - Date.now()) / 1000)).toBe(1);
+    }
+    expect(await short.confirm(e, [2], "b")).toBe(true);           // inside the hold
+    await new Promise((r) => setTimeout(r, 1300));
+    expect(await short.confirm(e, [3], "b")).toBe(false);           // expired: refused, as it must be
+    expect((await svc.hold(e, [3], "c")).ok).toBe(true);            // and the seat can be taken by somebody else
+    expect((await svc.hold(e, [1], "c")).ok).toBe(false);           // the default hold is still valid
   });
 });

@@ -31,6 +31,7 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 | `PORT` | 3101 | HTTP port |
 | `DATABASE_URL` | `postgres://lab:lab@localhost:55432/lab` | Postgres (read by `@boxoffice/platform`) |
 | `PG_POOL` | 20 | Work pool size |
+| `HOLD_SECONDS` | 600 | How long a hold lasts (positive integer). Short values are for the expiry scenario of the fault suite |
 | `SEED_SEATS` | 0 | When above 0, deletes and re-creates the seats of event 1 at start |
 | `SHUTDOWN_DEADLINE_MS` | 10000 | Total time for graceful shutdown, minimum 100 |
 | `SHUTDOWN_DRAIN_DELAY_MS` | 0 | Wait after going not-ready, so a load balancer notices |

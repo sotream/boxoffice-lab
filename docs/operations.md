@@ -84,7 +84,7 @@ Every series also carries a `service` label (set once per process). Labels are b
 |---|---|---|---|---|
 | `catalog_cache_requests_total` | counter | `result` | catalog | Cache lookups by result. |
 | `catalog_db_query_duration_seconds` | histogram | `op` | catalog | Postgres query time for catalog reads. |
-| `gateway_admission_rejected_total` | counter | - | gateway | Hold/confirm requests refused for a missing or invalid admission token. |
+| `gateway_admission_rejected_total` | counter | - | gateway | Hold, confirm and pay requests refused for a missing or invalid admission token, or whose body user is not the token's user. |
 | `gateway_limiter_decisions_total` | counter | `limiter`, `decision` | gateway | Rate limiter outcomes by limiter and decision (fail_open/fail_closed = limiter store unreachable). |
 | `gateway_upstream_duration_seconds` | histogram | `upstream` | gateway | Time spent waiting for the upstream service. |
 | `gateway_upstream_errors_total` | counter | `upstream`, `reason` | gateway | Upstream calls that ended in a 504 (timeout or unreachable). |
@@ -173,7 +173,7 @@ Symptom: `HoldLatency*Burn`. Metrics: `http_request_duration_seconds` for the ho
 
 ## Configuration and boot
 
-Each service validates its environment at start and exits with code 78 and one message listing every problem (a non-numeric `PORT`, a malformed URL, a value out of range), instead of failing on the first or later at runtime. All existing variable names and defaults are unchanged. With `NODE_ENV=production`, `ADMISSION_SECRET` must be set and must not be the development default `dev-secret`; gateway and waiting-room refuse to start otherwise.
+Each service validates its environment at start and exits with code 78 and one message listing every problem (a non-numeric `PORT`, a malformed URL, a value out of range), instead of failing on the first or later at runtime. All existing variable names and defaults are unchanged. With `NODE_ENV=production`, `ADMISSION_SECRET` must be set and must not be the development default `dev-secret`; gateway and waiting-room refuse to start otherwise. The same rule applies to `PAYMENTS_INTERNAL_TOKEN` (default `dev-internal-token`) for the gateway and payments, which use it to authenticate the gateway-to-payments call; payments answers 401 to a request without it on every path except the probe and metrics endpoints.
 
 New variables: `OPS_PORT` (notifications 3105, gateway 3106), `SHUTDOWN_DEADLINE_MS` (10000), `SHUTDOWN_DRAIN_DELAY_MS` (0), `LOG_LEVEL` (info).
 

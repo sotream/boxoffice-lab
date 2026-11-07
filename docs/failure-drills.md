@@ -29,7 +29,9 @@ Not reproducible: the "before" rows of drills 1 and 4 (100% errors when Redis st
 The payments saga claims the refund (`CHARGED -> REFUNDING`, compare-and-set) before it issues the keyed refund ([ADR 005](../services/payments/adr/005-claim-refund-before-issuing-it.md)). A crash after the claim leaves `REFUNDING`; the sweeper picks up `PENDING`, `CHARGED` and `REFUNDING` and re-issues the refund with the same key, so the provider sees one refund. This is covered by tests, not by a drill with timings: `services/payments/src/saga.races.ts` (REFUNDING claim races, a refund call that times out and is finished by the sweeper, a provider that cannot find the charge leaves `REFUNDING`) and a crash injected at each of 8 boundaries (`FaultHook`, before and after charge, confirm, refund and transition) for both confirm outcomes, plus a fast-check model-based test with random crashes and 1 to 4 concurrent runners. `payments_sagas{state="REFUNDING"}` staying above zero is the production signal ([operations](operations.md#metric-catalogue)). Residual risk, from the ADR: a provider that keeps failing is retried forever, with no retry cap or dedicated alert.
 
 ## Not drilled (stated honestly)
-Postgres failover, network partitions between services, clock skew, disk full, slow Postgres, slow Redis and a slow broker (proposed with derived expectations in [reliability-patterns](playbook/reliability-patterns.md), none run). Slow PSP is drill 4.
+Three of the claims in the drills above are also asserted automatically, with invariants and on private containers, by the [fault suite](e2e.md#fault-suite-pnpm-teste2efaults): Redis down (drill 1: holds and pay 503 with Retry-After, availability open, what the waiting room loses), broker down (drill 2: the outbox backlog grows, the gauges show it, the relay publishes it once after recovery) and a Postgres outage, which no drill covers. That suite does not replace the drills: it has no load numbers and no raw output, only pass or fail.
+
+Postgres failover (a Postgres outage without failover is in the fault suite), network partitions between services, clock skew, disk full, slow Postgres, slow Redis and a slow broker (proposed with derived expectations in [reliability-patterns](playbook/reliability-patterns.md), none run). Slow PSP is drill 4.
 
 ## Run
 The drills stop and start the compose containers and truncate shared tables (`notifications.deliveries`), so do not run them while tests or load scripts use the same Postgres, Redis or Redpanda. Details: [development.md](development.md#running-the-failure-drills).
@@ -37,7 +39,7 @@ The drills stop and start the compose containers and truncate shared tables (`no
 docker compose up -d
 pnpm build
 node drills/redis-down.mjs      # needs inventory 3101, waiting-room 3102, gateway 3100 running
-node drills/kafka-down.mjs      # needs inventory 3101, payments 3103 running
+node drills/kafka-down.mjs      # needs inventory 3101, payments 3103 running (the drills send PAYMENTS_INTERNAL_TOKEN, default dev-internal-token)
 node drills/consumer-kill.mjs   # starts and kills its own consumers
 node drills/slow-psp.mjs 20000  # needs inventory 3101 and payments 3103 started with PSP_ADMIN=1
 node drills/dlq-replay.mjs      # needs the notifications package built; runs its own consumer

@@ -20,7 +20,7 @@ const count = async (s: Stack, table: string) => Number((await s.q<{ n: string }
 async function chaosRun(seed: number) {
   stack = await Stack.start({ tag: `chaos${seed}`, seats: SEATS, pspLatencyMs: 250, pspFailRate: 0.15, admitPerSecond: 150, seed });
   const s = stack;
-  const load = runLoad({ seed, users: USERS, seats: SEATS, gateway: s.urls.gateway, paymentsUrl: s.urls.payments, concurrency: USERS, deadlineMs: 60_000 }, s.runId);
+  const load = runLoad({ seed, users: USERS, seats: SEATS, gateway: s.urls.gateway, concurrency: USERS, deadlineMs: 60_000 }, s.runId);
 
   // ---- crash 1: payments, mid-saga ----
   await s.waitUntil(async () => (await count(s, "payments.payments")) >= 25, 40_000, 20);

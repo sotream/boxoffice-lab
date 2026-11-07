@@ -12,7 +12,8 @@ The headline claims of this repository are correctness claims: no oversell, atom
 | Policy tables | every combination of route x token state x dependency state gives the documented status | `services/gateway/src/policy.test.ts` | milliseconds (fakes) |
 | Contract and fuzz at the HTTP edge | hostile input never gives a 5xx; cache keys are unambiguous | `services/catalog/src/properties.test.ts`, `services/waiting-room/src/http.test.ts` | seconds |
 | Failure-injection with a fake broker | dead-letter routing and partition progress of the real `consumer.ts` | `services/notifications/src/properties.test.ts` | seconds, no Kafka |
-| End-to-end with crashes | the invariants across gateway, inventory, payments, outbox, Kafka and notifications, including `kill -9` of payments and of the consumer | `packages/e2e` ([docs/e2e.md](e2e.md)) | about 2.5 minutes, needs Redpanda |
+| End-to-end with crashes | the invariants across gateway, inventory, payments, outbox, Kafka and notifications, including `kill -9` of payments and of the consumer | `packages/e2e` ([docs/e2e.md](e2e.md)) | about 2.5 minutes, needs the compose Redpanda |
+| End-to-end fault suite | the same invariants through `kill -9` of inventory, gateway and waiting-room, Postgres paused and stopped, Redpanda stopped, Redis stopped and paused, hold expiry, and two instances of gateway, payments and inventory, on private docker containers | `packages/e2e/src/faults`, `pnpm test:e2e:faults` ([docs/e2e.md](e2e.md#fault-suite-pnpm-teste2efaults)) | about 6 minutes, needs docker |
 | Mutation check | the tests above fail when the production code is deliberately broken | `scripts/mutation-check.mjs` | about 8 minutes |
 | Load tests and failure drills | numbers and behaviour under load (k6, `drills/`) | `services/*/load`, `docs/failure-drills.md` | minutes, manual |
 
@@ -65,7 +66,7 @@ node scripts/mutation-check.mjs --only inv-confirm-expiry,adm-expiry
 node scripts/mutation-check.mjs --list
 ```
 
-It refuses to mutate `packages/platform`, `main.ts`, `db.ts`, `app.module.ts`, gateway `app.ts`, tests and package.json files. The system-level breaks of the end-to-end suite have their own runner, `packages/e2e/mutation-check.mjs` (7 breaks, see docs/e2e.md).
+It refuses to mutate `packages/platform`, `main.ts`, `db.ts`, `app.module.ts`, gateway `app.ts`, tests and package.json files. The system-level breaks of the end-to-end suite have their own runner, `packages/e2e/mutation-check.mjs` (15 breaks, 8 of them against the docker-based fault suite, see docs/e2e.md).
 
 ### Result
 
@@ -117,14 +118,21 @@ It refuses to mutate `packages/platform`, `main.ts`, `db.ts`, `app.module.ts`, g
 | `pay-trace-not-stored` | payments | request trace not stored on the payment row | KILLED |
 | `pay-relay-id-string` | payments | outbox id published as a string and dead-lettered | KILLED |
 | `gw-user-mismatch` | gateway | gateway forwards a body whose userId differs from the admission token | KILLED |
-| `gw-method-405` | gateway | holds and confirms accept any method and skip the identity check | KILLED |
+| `gw-method-405` | gateway | holds, confirms and payments accept any method and skip the identity check | KILLED |
 | `pay-int4-bound` | payments | ids beyond int4 pass validation and the card is charged first | KILLED |
 | `pay-confirm-4xx-refund` | payments | any 4xx from inventory is read as lost seats and refunds a valid payment | KILLED |
 | `pay-sweep-swallows` | payments | the sweeper discards the failures of sagas it could not advance | KILLED |
 | `pay-seats-validation` | payments | the controller accepts empty or oversized seat lists and charges the card | KILLED |
 | `not-dlq-count-before-send` | notifications | the DLQ counter is never incremented | KILLED |
+| `pay-token-skip` | payments | `x-internal-token` is no longer checked | KILLED |
+| `pay-token-compare-open` | payments | the token comparison accepts any token | KILLED |
+| `pay-price-trust` | payments | a client amount that differs from seats x `SEAT_PRICE_CENTS` is accepted | KILLED |
+| `pay-price-from-client` | payments | the client's amount is charged instead of the computed price | KILLED |
+| `pay-key-scope` | payments | a replayed idempotency key of another user reads that user's payment | KILLED |
+| `gw-pay-event-binding` | gateway | `/pay` forwards a body that names another event than the path | KILLED |
+| `gw-pay-token-header` | gateway | the gateway does not send the internal token to payments | KILLED |
 
-52 of 52 killed on the last run (2026-11-06). After the lock-order fix two inventory mutations had stale `find` strings (the SQL changed) and one was caught by a different test than expected (a deadlock surfaces in whichever concurrent test hits it first); the definitions were updated, no mutation survived. `inv-forupdate-orderby` first survived: ids are sorted before the query and a small table is locked in key order by the planner anyway, so no concurrency test can tell; it is now killed by the statement-level lock-ordering test, which is a contract check rather than a behavioural one.
+52 of 52 killed on 2026-11-06; the 7 added on 2026-11-07 (authentication, price, key scoping, `/pay` binding) were run on their own and all killed, and the ones whose code was touched (`gw-user-mismatch` has a new `find` string, `gw-method-405`, `gw-user-key`, `gw-verify-skip`, `pay-seats-validation`, `pay-int4-bound`) were re-run and killed; the others were not re-run after this change. Two existing payments controller tests were vacuous once the price check existed (their body had a wrong amount, so the 400 came from the price, not from the rule under test); they now send no amount, and `pay-seats-validation` / `pay-int4-bound` are killed by the intended tests. After the lock-order fix two inventory mutations had stale `find` strings (the SQL changed) and one was caught by a different test than expected (a deadlock surfaces in whichever concurrent test hits it first); the definitions were updated, no mutation survived. `inv-forupdate-orderby` first survived: ids are sorted before the query and a small table is locked in key order by the planner anyway, so no concurrency test can tell; it is now killed by the statement-level lock-ordering test, which is a contract check rather than a behavioural one.
 
 ## Bugs found by these tests
 
@@ -143,6 +151,7 @@ Each was found by a property, fixed minimally, and has a regression test.
 | inventory `hold` and `confirm` deadlocked under different plans (found as a rare failure of the model-based test after a heavy run, then reproduced) | a bare multi-row `UPDATE` locks rows in plan order; with the confirming connections forced off indexes, 7 of ~4 800 statements failed with `40P01` | both statements lock their rows first in `seat_id` order inside the same statement; `lockorder.test.ts` forces different plans and fails on the old statements |
 | payments outbox relay, found by the end-to-end suite | every real event reached notifications as `outboxId` `"12"` (pg returns bigserial as text) and was dead-lettered; unit tests built events with numbers by hand | relay sends `Number(id)`; regression test in `payments.test.ts` |
 | gateway forwarded a body whose `userId` differed from the admission token (noted by the end-to-end suite, not asserted by it) | an admitted user could hold or confirm seats as another user | the gateway answers 403 unless the body `userId` equals the token's user, 400 for a body that is not JSON; test in `gateway.test.ts` |
+| inventory and payments killed by a Postgres restart, found by the fault suite | `docker stop` of Postgres under load: a connection terminated between two statements of a transaction emitted `error` on a checked-out client with no listener (`pg` removes the pool's idle listener on checkout), Node threw it unhandled and inventory exited; the platform test covered idle clients only | `createPool` of inventory and payments adds a no-op `error` listener per connection; `pool-errors.test.ts` in both services kills the backend of a checked-out client and fails without the fix |
 
 ## Known limits
 
