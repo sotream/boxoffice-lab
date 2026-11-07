@@ -31,7 +31,7 @@
 
 > **Status:** a learning and design lab, not a production system. Its known gaps are listed in [Limits of this lab](#limits-of-this-lab) and in [SECURITY.md](SECURITY.md).
 
-| 6 services | 16 ADRs | 5 failure drills | 69 mutations, 69 killed | 5 paper designs |
+| 6 services | 17 ADRs | 5 failure drills | 69 mutations, 69 killed | 5 paper designs |
 |:---:|:---:|:---:|:---:|:---:|
 | inventory, waiting-room, gateway, payments, notifications, catalog | [indexed with status](docs/adr-index.md) | broker, cache, consumer, provider down or slow; DLQ replay | [mutation check of the tests](docs/testing.md#mutation-check) | URL shortener, feed, ledger, ingestion, file pipeline |
 
@@ -127,7 +127,7 @@ pnpm --filter @boxoffice/notifications start                # needs Redpanda
 SEED_EVENTS=1000 pnpm --filter @boxoffice/catalog start     # truncates and seeds catalog.events
 ```
 
-A purchase through the gateway, including the payment (payments is internal: only the gateway calls it, with a request signature `x-internal-auth`):
+A purchase through the gateway, including the payment (payments and inventory are internal: only the gateway calls them, and payments calls inventory, each with a request signature `x-internal-auth`; the `curl` calls below go through the gateway, a direct call to port 3101 or 3103 without a signature is 401):
 
 ```bash
 curl -s -X POST localhost:3100/events/1/queue/join -H 'content-type: application/json' -d '{"userId":"alice"}'
@@ -160,7 +160,7 @@ Load scripts and drills write to the shared databases and stop containers: do no
 | Service | Port | Business endpoints | Ops endpoints |
 |---|---|---|---|
 | gateway | 3100 | `/events/:id/queue/join`, `/events/:id/queue/status`, `/events/:id/availability`, `/events/:id/holds`, `/events/:id/confirm`, `POST /events/:id/pay` | none on 3100; ops endpoints on 3106 (`OPS_PORT`) |
-| inventory | 3101 | `POST /events/:id/holds`, `POST /events/:id/confirm`, `GET /events/:id/availability` | same |
+| inventory | 3101 | `POST /events/:id/holds`, `POST /events/:id/holds/verify`, `POST /events/:id/confirm`, `GET /events/:id/availability` (all need `x-internal-auth`; internal, reached through the gateway and by payments) | same, no signature needed |
 | waiting-room | 3102 | `POST /events/:id/queue/join`, `GET /events/:id/queue/status` | same |
 | payments | 3103 | `POST /payments` (headers `Idempotency-Key` and `x-internal-auth`; internal, reached through the gateway's `/pay`), `POST /admin/psp` (only with `PSP_ADMIN=1`, also needs `x-internal-auth`) | same, no token needed |
 | catalog | 3104 | `GET /search`, `GET /events/:id` | same |
@@ -172,7 +172,7 @@ Load scripts and drills write to the shared databases and stop containers: do no
 
 ## Environment variables
 
-Each service validates its environment at start and exits with code 78 and one message listing every problem. With `NODE_ENV=production`, `ADMISSION_SECRET` must be set and must not be `dev-secret` (gateway and waiting-room refuse to start otherwise), and `PAYMENTS_INTERNAL_TOKEN` must be set and must not be `dev-internal-token` (gateway and payments). Per-service tables with defaults are in each service README; the main ones:
+Each service validates its environment at start and exits with code 78 and one message listing every problem. With `NODE_ENV=production`, `ADMISSION_SECRET` must be set and must not be `dev-secret` (gateway and waiting-room refuse to start otherwise), and `PAYMENTS_INTERNAL_TOKEN` and `INVENTORY_INTERNAL_TOKEN` must be set and must not be `dev-internal-token` / `dev-inventory-internal-token` (gateway and payments; inventory for its own key). Per-service tables with defaults are in each service README; the main ones:
 
 | Variable | Used by | Default |
 |---|---|---|
@@ -188,6 +188,8 @@ Each service validates its environment at start and exits with code 78 and one m
 | `ADMISSION_SECRET` | gateway, waiting-room (must match) | `dev-secret` (refused in production) |
 | `PAYMENTS_INTERNAL_TOKEN` | gateway, payments (must match); the HMAC key of the request signature, never sent | `dev-internal-token` (refused in production) |
 | `PAYMENTS_INTERNAL_TOKEN_PREVIOUS` | payments (optional) | unset; the previous key, accepted too while a rotation is in progress |
+| `INVENTORY_INTERNAL_TOKEN` | gateway, payments (they sign with it), inventory (verifies; must match); a key of its own, separate from the payments one; never sent | `dev-inventory-internal-token` (refused in production) |
+| `INVENTORY_INTERNAL_TOKEN_PREVIOUS` | inventory (optional) | unset; the previous key, accepted too while a rotation is in progress |
 | `TRUST_PROXY` | gateway | empty: `x-forwarded-for` from clients is ignored; set the load balancer's addresses or CIDRs to use it |
 | `IP_RATE` `IP_BURST` `USER_RATE` `USER_BURST` `UPSTREAM_TIMEOUT_MS` | gateway | 50, 100, 5, 10, 2000 |
 | `ADMIT_PER_SECOND` | waiting-room | 500 |
@@ -258,7 +260,7 @@ CI (`.github/workflows/ci.yml`): Postgres 18 and Redis 7 as service containers, 
 - The mutation check covers inventory, waiting-room, gateway, admission, capacity, catalog, notifications and the payments saga, authentication and price (69 mutations); it deliberately does not mutate `packages/platform`, the service bootstraps (`main.ts`, `db.ts`, `app.module.ts`) and the gateway `app.ts`, which are wiring covered by the spawned-process tests.
 - No multi-node setup was tested: no Redis failover, no Postgres replicas, no real network between services. The fault suite injects clean faults on single private nodes (process kill, container stop or pause); three scenarios put a TCP proxy (latency, silent partition, reset) on the inventory-to-Postgres, payments-to-inventory and gateway-to-Redis paths, but it does not cover packet loss, asymmetric partitions, disk full, clock skew or failover, and its two-instance scenario shares one fake PSP per process ([docs/e2e.md](docs/e2e.md#known-limits)).
 - OpenSearch/Elasticsearch was not run; the catalog ADR argues from its documented trade-offs, not from measurements.
-- Security: payments is reachable only with a request signed by a shared key (`x-internal-auth`: HMAC over timestamp, method, path and body, 30 s skew), which is not mTLS and does not tell callers apart; seat-hold ownership is checked before the charge ([ADR 007](services/payments/adr/007-verify-holds-before-charging.md)) but only as a snapshot, so an unknown answer or an expiry between check and confirm still ends in charge then refund. See [SECURITY.md](SECURITY.md) and [payments ADR 006](services/payments/adr/006-internal-authentication-and-server-side-price.md).
+- Security: payments and inventory are reachable only with a request signed by a shared key (`x-internal-auth`: HMAC over timestamp, method, path and body, 30 s skew; a separate key for each callee), which is not mTLS and does not tell callers apart; the extra HMAC per inventory request was not benchmarked ([inventory ADR 002](services/inventory/adr/002-signed-internal-requests.md)); seat-hold ownership is checked before the charge ([ADR 007](services/payments/adr/007-verify-holds-before-charging.md)) but only as a snapshot, so an unknown answer or an expiry between check and confirm still ends in charge then refund. See [SECURITY.md](SECURITY.md) and [payments ADR 006](services/payments/adr/006-internal-authentication-and-server-side-price.md).
 - The gateway is plain Fastify standing in for Envoy or Kong; the PSP and email providers are fakes with fixed latency.
 - Admission is a fixed budget, not adaptive to inventory latency, and the admission tick serves event 1 only.
 - Payments saga: a saga the sweeper can never finish is retried forever; there is no terminal `NEEDS_REVIEW` state or retry cap ([operations.md](docs/operations.md#known-gaps)).
