@@ -256,6 +256,10 @@ CI (`.github/workflows/ci.yml`): Postgres 18 and Redis 7 as service containers, 
 - The gateway is plain Fastify standing in for Envoy or Kong; the PSP and email providers are fakes with fixed latency.
 - Admission is a fixed budget, not adaptive to inventory latency, and the admission tick serves event 1 only.
 
+## How this was built
+
+The repository was developed with an AI coding assistant (Claude Code), working under the author's direction: the author set the scope, the rules and the acceptance criteria; the assistant wrote most of the code and text, partly through parallel sub-agents (tests, operations, documentation, end-to-end suite). What this repository asks you to trust is therefore not who typed it but the evidence: property and model-based tests, a mutation runner that breaks the code and requires named tests to fail (52 of 52 caught), a system-level end-to-end suite with `kill -9`, and three independent review passes whose findings are listed in [docs/testing.md](docs/testing.md#bugs-found-by-these-tests). Several of those bugs were found by the tests, not by reading the code. Commits carry no AI trailers by the author's choice (see `CLAUDE.md`); this section is the disclosure.
+
 ## License
 
 [MIT](LICENSE)
