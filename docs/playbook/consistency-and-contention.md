@@ -120,7 +120,7 @@ Why inventory does not use it: a seat is contended by thousands of buyers within
 
 **When to pick it.** The decision needs data you cannot put in a WHERE clause (values from several rows, a computation), and the critical section is short and stays inside the database. Over the conditional UPDATE only when the single-statement form cannot express the rule.
 
-**Cost.** Two round trips and locks held across them. Measured here: 2182 vs 2654 RPS at low contention, 17.8% less (table above).
+**Cost.** Two round trips and locks held across them. Measured here: 2182 vs 2654 RPS at low contention, 17.8% less (table above) on the first version; once the single statement also locks its rows in order (re-measured, final code) it is 2168 vs 2294, 5.5% less, which suggests that much of the first advantage came from not locking in order rather than from the saved round trip (one run each, so this is an inference, not a measurement of the cause).
 
 **Failure mode.** Deadlock when two transactions lock the same rows in different orders; lock pile-ups if anything slow (an HTTP call) runs while locks are held; idle-in-transaction connections exhausting the pool.
 

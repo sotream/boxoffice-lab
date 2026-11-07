@@ -14,7 +14,7 @@ Before climbing, one calculation: `instancesNeeded(peak, perInstance, 0.6)` = ce
 - GIN vs ILIKE on a rare term: 6 230 vs 16 RPS (about 390x), p50 7.7 vs 2 834.2 ms.
 - ILIKE vs FTS on a common term with city filter: 2 839 vs 3 199 RPS, only 1.1x (and the FTS p99 is higher, 75.4 vs 41.6 ms), because the `(city, starts_at)` b-tree lets ILIKE stop early.
 - Ranking: FTS ordered by date 3 199 RPS vs FTS ranked 536 RPS (6.0x). Ranking cost is O(matches). Remedy inside this rung: take top-N candidates by a cheap key and rank only those, or order by a b-tree column ([catalog ADR 001](../../services/catalog/adr/001-postgres-fts-before-elasticsearch.md)).
-- Inventory: one conditional UPDATE instead of `SELECT ... FOR UPDATE` then UPDATE: 2 654 vs 2 182 RPS at low contention (about 18 % fewer for the lock-then-write form) [measured, [inventory RESULTS](../../services/inventory/RESULTS.md)].
+- Inventory: one conditional UPDATE instead of `SELECT ... FOR UPDATE` then UPDATE: 2 654 vs 2 182 RPS at low contention (about 18 % fewer for the lock-then-write form on the first version; on the final code with ordered locking the gap is 2 294 vs 2 168, about 6 %) [measured, [inventory RESULTS](../../services/inventory/RESULTS.md)].
 - Payments: 3 commits per payment is the limit; fewer commits per payment is the same kind of fix [measured, [payments RESULTS](../../services/payments/RESULTS.md)]; the collapse was proposed, not implemented.
 
 **Cost.** Engineering time only. Index cost is write amplification and space: at 200 000 events the table is 63 MB and indexes 24 MB [measured]. A cheaper sort key may change product behaviour (date order instead of relevance).

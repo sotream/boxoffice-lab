@@ -43,7 +43,7 @@ All from the linked `RESULTS.md`. Setup: MacBook Air M1, Node 26, NestJS 12 / Fa
 
 | Component and scenario | Result | Source |
 |---|---|---|
-| Inventory hold, atomic UPDATE, 100k seats, pool 20 | 2 654 RPS, p99 31.7 ms | [inventory](../services/inventory/RESULTS.md) |
+| Inventory hold, atomic UPDATE, 100k seats, pool 20 | 2 654 RPS, p99 31.7 ms (first version, PostgreSQL 17); 2 294 RPS, p99 38.4 ms on the final code (PostgreSQL 18, instrumented, ordered locks) | [inventory](../services/inventory/RESULTS.md) |
 | Inventory hold, 20 hot seats | 3 222 RPS (losers get an immediate 409) | [inventory](../services/inventory/RESULTS.md) |
 | Waiting room status/join, Redis 7 | 10 134 RPS, p99 22.3 ms | [waiting-room](../services/waiting-room/RESULTS.md) |
 | Gateway hop (IP limiter + proxy) | 2 485 direct -> 2 001 through gateway | [gateway](../services/gateway/RESULTS.md) |
