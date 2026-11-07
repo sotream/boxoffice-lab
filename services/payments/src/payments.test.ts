@@ -5,6 +5,7 @@ import { FaultHook, FaultPoint, IdempotencyKeyReused, PaymentsService, PaymentRe
 import { FakePsp } from "./psp";
 import { registerRaceTests } from "./saga.races";
 import { registerPropertyTests } from "./saga.property";
+import { SWEEP_MARGIN_MS, sweepMarginProblem } from "./sweep-margin";
 
 const pool = createPool(30);
 beforeAll(async () => { await migrate(pool); });
@@ -307,6 +308,34 @@ describe("pre-charge ownership check (ADR 007)", () => {
     expect(await svc.sweep(3)).toBe(1);
     expect(await statusOf()).toBe("CONFIRMED");
     expect(asked).toBe(1);
+  });
+
+  describe("sweeper threshold versus the slow check (ADR 007)", () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    /** A pay() whose check answers "not held" after `verifyMs`, while a sweeper with the given threshold polls every 25 ms. */
+    const payWithSweeper = async (stepMs: number, verifyMs: number, thresholdSeconds: number, key: string) => {
+      const psp = new FakePsp();
+      const svc = svcWith(psp, async () => { await sleep(verifyMs); return false; }, async () => true, stepMs);
+      let stop = false;
+      const sweeper = (async () => { while (!stop) { await svc.sweep(thresholdSeconds); await sleep(25); } })();
+      try { return { psp, outcome: await svc.pay(req(key)) }; } finally { stop = true; await sweeper; }
+    };
+
+    it("valid configuration: a check that takes nearly the whole step timeout still fails the payment and the sweeper never charges it", async () => {
+      const stepMs = 400, thresholdMs = stepMs + SWEEP_MARGIN_MS;
+      expect(sweepMarginProblem({ sweepMinAgeMs: thresholdMs, confirmTimeoutMs: stepMs, pspTimeoutMs: stepMs, verifyHolds: true })).toBeUndefined();
+      const { psp, outcome } = await payWithSweeper(stepMs, 350, thresholdMs / 1000, "sw1");
+      expect(outcome).toMatchObject({ kind: "done", payment: { status: "FAILED" } });
+      expect(psp.chargeCalls).toBe(0);
+      expect(await outbox()).toEqual(["payment.failed"]);
+    });
+
+    it("the dangerous configuration is refused at startup, and it is dangerous: the sweeper charges a payment the request path then fails as not held", async () => {
+      const stepMs = 400, thresholdMs = 100;
+      expect(sweepMarginProblem({ sweepMinAgeMs: thresholdMs, confirmTimeoutMs: stepMs, pspTimeoutMs: stepMs, verifyHolds: true })).toMatch(/SWEEP_MIN_AGE_MS \(100\) must be at least 900/);
+      const { psp } = await payWithSweeper(stepMs, 350, thresholdMs / 1000, "sw2");
+      expect(psp.chargeCalls).toBe(1); // charged although the check said "not held": exactly what the startup validation exists to prevent
+    });
   });
 
   it("a contract error from the check propagates, and the payment is neither charged nor failed", async () => {

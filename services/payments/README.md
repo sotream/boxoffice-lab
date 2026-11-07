@@ -52,6 +52,7 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 | `PSP_LATENCY_MS` | 100 | Fake PSP latency |
 | `PSP_FAIL_RATE` | 0 | Share of declined charges, 0 to 1 |
 | `PSP_TIMEOUT_MS`, `CONFIRM_TIMEOUT_MS` | 2000, 2000 | Step timeouts; a timeout is an unknown outcome and answers 202 |
+| `SWEEP_MIN_AGE_MS` | 3000 | How old (since the last state change) a `PENDING`, `CHARGED` or `REFUNDING` saga must be before the sweeper resumes it. With `VERIFY_HOLDS` on it must be at least `min(CONFIRM_TIMEOUT_MS, PSP_TIMEOUT_MS) + 500`, otherwise exit 78 (ADR 007) |
 | `PSP_ADMIN` | 0 | `1` enables `POST /admin/psp` |
 | `PAYMENTS_INTERNAL_TOKEN` | `dev-internal-token` | HMAC key with which the gateway signs its requests (`x-internal-auth`); the key itself is never sent. With `NODE_ENV=production` it must be set and not the default, otherwise exit 78 |
 | `PAYMENTS_INTERNAL_TOKEN_PREVIOUS` | unset | Optional previous key, accepted in addition to the current one during a rotation (deploy payments with both, then the gateway with the new one, then drop the previous). Refused in production when it is the development default |

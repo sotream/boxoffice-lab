@@ -158,6 +158,11 @@ describe("payments process", () => {
     live.push(bad);
     expect((await bad.exited).code).toBe(78);
     expect(bad.output()).toMatch(/SEAT_PRICE_CENTS must be >= 1/);
+    // ADR 007: a sweeper threshold that does not clear the pre-charge check by the margin is refused, together with the other problems
+    const racy = spawnService(pkg, { DATABASE_URL: scratch.url, KAFKA_BROKER: BROKER, PORT: String(await freePort()), SWEEP_MIN_AGE_MS: "2000", SEAT_PRICE_CENTS: "0" });
+    live.push(racy);
+    expect((await racy.exited).code).toBe(78);
+    expect(racy.output()).toMatch(/SWEEP_MIN_AGE_MS \(2000\) must be at least 2500[\s\S]*SEAT_PRICE_CENTS must be >= 1/);
   }, 30_000);
 
   it("SIGTERM during an in-flight payment: it completes, relay and sweeper stop, the process exits 0", async () => {
