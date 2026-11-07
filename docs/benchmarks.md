@@ -48,7 +48,17 @@ Load average (1 minute) logged before the 15 runs: 3.7 to 19.0; 11 of 15 runs st
 
 ## GitHub-hosted runner (ubuntu-latest)
 
-Not measured yet. This section is filled in from the first run of the `bench` workflow (dispatch command above): copy the environment block and the tables from the job summary, with the run URL, date and commit. No numbers are given here until that run exists.
+Commit `62a1445`, AMD EPYC 7763, 4 vCPU, 16 GB, Postgres 18 with default settings, k6 on the same runner, 5 runs per scenario, 0 failed requests. Runs: [inventory](https://github.com/sotream/boxoffice-lab/actions/runs/42369726037), [waiting-room](https://github.com/sotream/boxoffice-lab/actions/runs/42369728641). RPS is the median with min-max in brackets.
+
+| scenario | RPS | p95 ms | p99 ms |
+|---|---|---|---|
+| inventory atomic, low contention | 1 711 (1 666-1 737) | 37.6 | 47.1 |
+| inventory atomic, hot | 1 960 (1 925-1 968) | 32.6 | 39.8 |
+| inventory for-update, low contention | 1 812 (1 789-1 821) | 35.7 | 43.7 |
+| inventory for-update, hot | 2 476 (2 424-2 487) | 26.0 | 32.7 |
+| waiting-room | 6 522 (6 265-6 565) | 22.8 | 28.0 |
+
+The spread here is tight (under 5%), unlike the laptop. Finding: on the final code for-update is equal or faster than atomic-update, so the earlier "single UPDATE is ~18% faster" claim is retracted. Absolute numbers are lower than the laptop's because of 4 shared vCPUs and default Postgres settings, so compare ratios, not levels.
 
 ## Reading the spread
 
