@@ -110,8 +110,40 @@ The first M1 table above (1 711 to 7 505 RPS) is therefore a result of the machi
 | inventory for-update, hot | 2 476 | 5 214 | 13 682 |
 | waiting-room | 6 522 | 15 216 | 39 144 |
 
-- **The factor is nearly constant across rows.** M1 over runner: 2.1x, 2.1x, 2.1x, 2.1x, 2.3x. M4 Pro over M1: 3.0x, 2.9x, 2.8x, 2.6x, 2.6x. Rows that exercise Postgres with a commit per request and a row that touches only Redis scale by the same amount, and the Node service and k6 each use well over one core, so the single-host test is limited by the CPU the machine can give to service, load generator and the Docker VM (which holds Postgres and Redis and showed 200% to 260% of a core in a `BENCH_CPU=1` waiting-room run on the M1) together; the sampling shows that all three parts are busy, not which one is the limit. That is what the data supports. It does not separate core count from per-core speed (runner 4 vCPU, M1 4 performance plus 4 efficiency cores, M4 Pro 12 cores in Docker's view), and the CPU sampling was not repeated on the M4 Pro or the runner, so the split is not proven.
+- **The factor is nearly constant across rows.** M1 over runner: 2.1x, 2.1x, 2.1x, 2.1x, 2.3x. M4 Pro over M1: 3.0x, 2.9x, 2.8x, 2.6x, 2.6x. Rows that exercise Postgres with a commit per request and a row that touches only Redis scale by the same amount, and the Node service and k6 each use well over one core, so the single-host test is limited by the CPU the machine can give to service, load generator and the Docker VM (which holds Postgres and Redis and showed 200% to 260% of a core in a `BENCH_CPU=1` waiting-room run on the M1) together; the sampling shows that all three parts are busy, not which one is the limit. That is what the data supports. It does not separate core count from per-core speed (runner 4 vCPU, M1 4 performance plus 4 efficiency cores, M4 Pro 12 cores in Docker's view), and the CPU sampling was not repeated on the runner, so the split is not proven. The M4 Pro sampling is in the next section.
 - **The 6x that triggered this was mostly a measurement problem plus real hardware.** M4 Pro over runner is 5.5x to 6.3x, but about 2x of that is the runner against a quiet M1, and about 2.8x is the M1 against the M4 Pro; the first M1 run sat in between only by accident of load.
 - **Levels are not portable.** With the README formula (hold RPS x 0.6 / 3) the budget is about 342 users/s from the runner median, about 725 from the quiet M1 and about 2 160 from the M4 Pro, against a configured 500. Derive it on the target hardware.
 - **The strategy comparison is consistent where the spread is small.** At low contention atomic-update and for-update are indistinguishable on the runner (-6%), the quiet M1 (-4%) and the M4 Pro (+0.7%); on none does the single conditional UPDATE show the ~18% advantage of the first version. At hot contention for-update is faster everywhere (+26%, +24%, +12%).
 - This supports the playbook's position: quote ranges, treat absolute figures as per-environment, and choose between the strategies on correctness.
+
+## M4 Pro with CPU sampling, and payments on two machines
+
+Repeat on the M4 Pro (2026-11-07, 17:04 to 17:43 CET), commit `90b6a5a`, AC power at 100%, Docker Desktop on the Apple Virtualization framework with 12 CPUs and 8.3 GB (the Rosetta setting and the Resources limits were not read), `BENCH_CPU=1 scripts/bench.sh inventory 5`, `waiting-room 5`, `payments 3`. 0 failed requests, 0 failed checks, 0 breached thresholds in all 33 runs. The quiet check before the start read a 1-minute load of 1.8. The load the script logged before the inventory runs was 3.6 to 6.5 and 7 of 20 runs started above 4 even after the 60 s wait; the machine was idle otherwise, so this is mostly the tail of the previous run's own load (the 1-minute average includes the benchmark itself), which means the "wait until load < 4" gate is weak for back-to-back runs. The spread is about 2% or less per row.
+
+| Row | RPS median (min-max) | p95 ms | p99 ms |
+|---|---|---|---|
+| inventory, atomic-update, low contention (100 000 seats) | 10 679 (10 591-10 712) | 6.0 | 7.1 |
+| inventory, atomic-update, hot (20 seats) | 12 095 (11 885-12 140) | 5.0 | 6.0 |
+| inventory, for-update, low contention (100 000 seats) | 10 603 (10 468-10 612) | 6.4 | 7.4 |
+| inventory, for-update, hot (20 seats) | 13 492 (13 436-13 606) | 4.5 | 5.2 |
+| waiting-room, join + 2 status polls | 39 231 (39 077-39 480) | 3.7 | 4.3 |
+| payments, PSP 100 ms | 475 (475-497) | 273.5 | 280.5 |
+| payments, PSP 0 ms | 2 151 (2 133-2 212) | 68.2 | 73.2 |
+
+The M4 Pro rows agree with the first M4 Pro run within 1.1% to 1.4% (inventory) and 0.2% (waiting-room), so the earlier figures were not a load artefact.
+
+Mean CPU during the runs, as `ps` percent of one core (peak in brackets). The Docker VM is `com.apple.Virtualization.VirtualMachine` and holds Postgres, Redis and Redpanda.
+
+| Scenario | M4 Pro: VM | M4 Pro: k6 | M4 Pro: node | M1: VM | M1: k6 | M1: node |
+|---|---|---|---|---|---|---|
+| inventory atomic, low | 398 (546) | 84 (112) | 60 (84) | not sampled | | |
+| inventory for-update, hot | 325 (450) | 98 (133) | 62 (87) | not sampled | | |
+| waiting-room | 129 (176) | 194 (260) | 79 (106) | 200 to 260 (earlier run) | | |
+| payments, PSP 0 ms | 316 (470) | 21 (33) | 91 (122) | 341 (455) | 15 (21) | 83 (132) |
+| payments, PSP 100 ms | 94 (131) | 6 (11) | 36 (48) | 219 (313) | 10 (18) | 56 (74) |
+
+What this shows, and what it does not:
+
+- **On the M4 Pro the machine is not saturated.** The three sampled processes together average about 5.4 cores of the 12 in the inventory runs and about 4 in waiting-room. Neither the Node service (60% to 90% of one core) nor k6 is at a core limit, so "the test is CPU-bound" does not hold for the M4 Pro in the sense of all cores being busy. The largest consumer in the inventory and payments rows is the Docker VM (3 to 5.5 cores), i.e. Postgres plus the VM's network and disk path; in waiting-room, which touches only Redis, it is k6 (about 2 cores). The single Node process uses one core by design, so a service that is not CPU-limited at 60% to 90% of a core is waiting on something: the round trip to Postgres or Redis through the VM. That is a hypothesis consistent with the numbers; it was not tested (for example by running Postgres natively or with more service instances).
+- **Payments is dominated by the PSP latency, then by the VM.** With a 100 ms PSP the 100 VUs are mostly waiting (k6 at 6%, node at 36% of a core) and throughput is about VUs divided by latency; with a 0 ms PSP the throughput is 4.5 times higher on the M4 Pro (2 151 against 475) and 1.8 times higher on the M1 (959 against 536). M4 Pro over M1 is 2.2x without PSP latency (2 151 against 959) and 0.9x with it (475 against 536): the 100 ms row is limited by the latency, not by the machine, and the M4 Pro's p95 there (273 ms) is not better than the M1's (250 ms). With three runs each and a 100 ms floor, this row does not rank the machines.
+- **Runner and M1 still have no CPU split for the inventory rows**, so "cores versus per-core speed" remains open; the M1 payments sample (VM at 341% mean of 8 CPUs, node at 83%) points the same way as the M4 Pro.
