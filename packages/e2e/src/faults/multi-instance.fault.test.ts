@@ -2,6 +2,7 @@ import { createServer, request, type Server } from "node:http";
 import { freePort } from "@boxoffice/platform";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mergeLoads, runLoad } from "../load";
+import { signInternalRequest } from "@boxoffice/platform";
 import { INTERNAL_TOKEN } from "../stack";
 import { count, settleAndCheck, startWorld, stopWorld, type World } from "./world";
 
@@ -50,7 +51,11 @@ describe("fault 7: several instances", () => {
     const b = runLoad({ seed: 4802, users: 120, seats: SEATS, gateway: gw2.url, concurrency: 120, deadlineMs: 120_000, userOffset: 1000 }, s.runId);
     await s.waitUntil(async () => (await count(s, "payments.payments")) >= 40, 60_000, 50);
     const stuck = await count(s, "payments.payments WHERE status='PENDING'");
-    for (const base of [s.urls.payments, payB.url]) await fetch(`${base}/admin/psp`, { method: "POST", headers: { "content-type": "application/json", "x-internal-token": INTERNAL_TOKEN }, body: JSON.stringify({ latencyMs: 250 }) });
+    const slowPsp = JSON.stringify({ latencyMs: 250 });
+    for (const base of [s.urls.payments, payB.url]) {
+      const r = await fetch(`${base}/admin/psp`, { method: "POST", headers: { "content-type": "application/json", "x-internal-auth": signInternalRequest(INTERNAL_TOKEN, "POST", "/admin/psp", slowPsp) }, body: slowPsp });
+      expect(r.status, "the PSP latency change must be accepted, otherwise the scenario does not test what it says").toBe(201);
+    }
     const [ra, rb] = await Promise.all([a, b]);
     const all = mergeLoads(ra, rb);
     const { report, quiet } = await settleAndCheck(w, all, { seats: SEATS, quiescentMs: 120_000 });
