@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { checkInvariants, waitQuiescent } from "./invariants";
 import { runLoad } from "./load";
 import { signAdmission } from "@boxoffice/admission";
+import { signInternalRequest } from "@boxoffice/platform";
 import { INTERNAL_TOKEN, SECRET, Stack } from "./stack";
 
 const SEATS = 100;
@@ -73,10 +74,14 @@ describe("scenario 1b: the boundary of payments, after the sale", () => {
     const key = { "idempotency-key": "e2e-boundary-1" };
     // not reachable without the credential, whatever the body is
     expect((await post(direct, key, payBody("mallory"))).status).toBe(401);
-    expect((await post(direct, { ...key, "x-internal-token": "guess" }, payBody("mallory"))).status).toBe(401);
+    const signed = (body: string, secret = INTERNAL_TOKEN, now = Date.now()) => ({ ...key, "x-internal-auth": signInternalRequest(secret, "POST", "/payments", body, now) });
+    expect((await post(direct, signed(payBody("mallory"), "guess"), payBody("mallory"))).status).toBe(401);
+    // the secret is never on the wire, and a signature neither survives another body nor the clock skew
+    expect((await post(direct, signed(payBody("mallory")), payBody("mallory", { seatIds: [1, 2] }))).status).toBe(401);
+    expect((await post(direct, signed(payBody("mallory"), INTERNAL_TOKEN, Date.now() - 120_000), payBody("mallory"))).status).toBe(401);
     expect((await post(direct, key, "{not json")).status).toBe(401);
     // with the credential a tampered price is refused (the amount is computed from the seats)
-    expect((await post(direct, { ...key, "x-internal-token": INTERNAL_TOKEN }, payBody("mallory", { amountCents: 1 }))).status).toBe(400);
+    expect((await post(direct, signed(payBody("mallory", { amountCents: 1 })), payBody("mallory", { amountCents: 1 }))).status).toBe(400);
 
     // through the gateway: no token, a token of another event, and a body for somebody else are all refused before payments is called
     const gw = `${stack.urls.gateway}/events/1/pay`;

@@ -1,5 +1,5 @@
 import { verifyAdmission } from "@boxoffice/admission";
-import { outgoingHeaders } from "@boxoffice/platform";
+import { INTERNAL_AUTH_HEADER, outgoingHeaders, signInternalRequest } from "@boxoffice/platform";
 import { admissionRejected, limiterDecisions, upstreamDuration, upstreamErrors } from "./metrics";
 import { RateLimiter } from "./rate-limiter";
 
@@ -18,7 +18,7 @@ export interface GatewayConfig {
   /** Base URL of the payments service (upstream label "payments"). */
   paymentsUrl: string;
   secret: string;
-  /** Shared secret sent to payments in `x-internal-token` on every forwarded payment. */
+  /** Key with which every forwarded payment is signed (`x-internal-auth`); the key itself is never sent. */
   internalToken: string;
 }
 
@@ -72,7 +72,8 @@ export class GatewayService {
       // bug or an attack, never silently corrected; a body without one gets the path's event, so the path is the single source.
       if (parsed.eventId !== undefined && parsed.eventId !== eventId) return { reject: { status: 400, body: '{"error":"eventId does not match the path"}' } };
       if (typeof idempotencyKey !== "string" || idempotencyKey.trim() === "") return { reject: { status: 400, body: '{"error":"Idempotency-Key header required"}' } };
-      return { path: "/payments", query: "", body: JSON.stringify({ ...parsed, eventId }), headers: { "idempotency-key": idempotencyKey, "x-internal-token": this.cfg.internalToken } };
+      const payload = JSON.stringify({ ...parsed, eventId });
+      return { path: "/payments", query: "", body: payload, headers: { "idempotency-key": idempotencyKey, [INTERNAL_AUTH_HEADER]: signInternalRequest(this.cfg.internalToken, "POST", "/payments", payload) } };
     };
     return this.forward(route === "pay" ? "payments" : "inventory", "user", this.userLimiter, `user:${who.userId}`, path, query, method, body, fwd, false, gate);
   }

@@ -65,7 +65,7 @@ Also checked: the client's final answer equals the stored state, and quiescence 
 | declined charges | `PSP_FAIL_RATE` | FAILED + event, no seats confirmed | 1, 2, 3 |
 | payment for seats held by somebody else | cheater users (own token, own id, someone else's seat) | hold ownership is checked only at confirm: charged, inventory owner check says no, compensation REFUNDING -> REFUNDED | 1, 2, 3 |
 | payment as another user | impostor users (own token, victim's id in the body) | gateway binds the body user to the token: 403, nothing charged (invariant g) | 1, 2, 3 |
-| payments reached without the gateway, tampered price, replayed key | direct calls and a second user (scenario 1b) | `x-internal-token`, server-side price, idempotency key scoped to the user | 1b |
+| payments reached without the gateway, tampered price, replayed key | direct calls and a second user (scenario 1b) | signed internal requests (`x-internal-auth`), server-side price, idempotency key scoped to the user | 1b |
 | limiter overload | tiny limits, concurrent storm | 429 + Retry-After | 3 |
 | limiter store down | gateway pointed at a dead Redis port (the shared server is not touched) | fail closed (holds), fail open (reads) | 3 |
 

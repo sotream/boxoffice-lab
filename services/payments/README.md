@@ -27,7 +27,7 @@ See [CAPACITY.md](CAPACITY.md), [adr/](adr/), [RESULTS.md](RESULTS.md).
 ## Endpoints
 Port 3103. Internal: clients reach it through the gateway's `POST /events/:eventId/pay` ([gateway README](../gateway/README.md#endpoints)), which checks the admission token, rate-limits per user, binds the body user to the token and adds the credential below.
 
-**Authentication.** Every request except `/healthz`, `/readyz` and `/metrics` (including `POST /admin/psp`) must carry header `x-internal-token` equal to `PAYMENTS_INTERNAL_TOKEN`; otherwise 401 `{statusCode:401, error:"Unauthorized", message:"internal token required"}`. It is an `onRequest` hook (`src/internal-auth.ts`): it runs before the body is read, parsed or validated and before any database access, so a malformed body without the token is 401, not 400. The comparison hashes both values with SHA-256 and uses `timingSafeEqual`.
+**Authentication.** Every request except `/healthz`, `/readyz` and `/metrics` (including `POST /admin/psp`) must carry header `x-internal-auth: <unix ms>.<hex HMAC-SHA256>`, computed with `PAYMENTS_INTERNAL_TOKEN` (the key is never sent) over `timestamp, METHOD, path without query, SHA-256 of the body`; otherwise 401 `{statusCode:401, error:"Unauthorized", message:"signed internal request required"}`. Two hooks (`src/internal-auth.ts`, the signing code is `packages/platform/src/internal-auth.ts`), both before the body is parsed or validated and before any database access, so a malformed body without a signature is 401, not 400: `onRequest` rejects a missing, malformed or stale header (more than 30 s from the server clock, either direction) without reading anything; `preParsing` reads the raw body (at most 64 KiB, else 413), verifies the HMAC with `timingSafeEqual` against the current key and, if set, `PAYMENTS_INTERNAL_TOKEN_PREVIOUS`, and passes the same bytes on. A captured header therefore does not work for another body, path or method and expires; within 30 s the identical request can be replayed, which the idempotency key makes harmless for `/payments`. Whoever holds the key can sign anything.
 
 **Price.** `amountCents = seatIds.length x SEAT_PRICE_CENTS`. The body may still carry `amountCents`; it must then equal the computed value (400 otherwise), so a tampered price is rejected before the card is touched and clients that send the right price keep working.
 
@@ -35,8 +35,8 @@ Port 3103. Internal: clients reach it through the gateway's `POST /events/:event
 
 | Method and path | Body or header | Answer |
 |---|---|---|
-| `POST /payments` | headers `x-internal-token` and `Idempotency-Key` (both required), body `{eventId, userId, seatIds, amountCents?}` (`amountCents` optional, must equal `seatIds.length x SEAT_PRICE_CENTS`) | 200 `{status, paymentId, inProgress:false}` for a final state (`CONFIRMED`, `REFUNDED`, `FAILED`); 202 with `inProgress:true` while the saga is not final (`PENDING`, `CHARGED`, `REFUNDING`); 401 without a valid `x-internal-token`; 400 on a missing key, an invalid body (1 to 8 distinct seat ids, int4 ids; duplicates such as `[5,5,5]` are refused so one seat is never priced several times) or an `amountCents` that is not the computed price; 409 when the same user reuses the key with a different event or seat set |
-| `POST /admin/psp` | header `x-internal-token`, body `{latencyMs}` | only with `PSP_ADMIN=1`: sets the fake PSP latency (drills); 401 without the token |
+| `POST /payments` | headers `x-internal-auth` and `Idempotency-Key` (both required), body `{eventId, userId, seatIds, amountCents?}` (`amountCents` optional, must equal `seatIds.length x SEAT_PRICE_CENTS`) | 200 `{status, paymentId, inProgress:false}` for a final state (`CONFIRMED`, `REFUNDED`, `FAILED`); 202 with `inProgress:true` while the saga is not final (`PENDING`, `CHARGED`, `REFUNDING`); 401 without a valid `x-internal-token`; 400 on a missing key, an invalid body (1 to 8 distinct seat ids, int4 ids; duplicates such as `[5,5,5]` are refused so one seat is never priced several times) or an `amountCents` that is not the computed price; 409 when the same user reuses the key with a different event or seat set |
+| `POST /admin/psp` | header `x-internal-auth`, body `{latencyMs}` | only with `PSP_ADMIN=1`: sets the fake PSP latency (drills); 401 without a valid signature |
 | `GET /healthz`, `/readyz`, `/metrics` | | see Operations |
 
 ## Environment
@@ -53,7 +53,8 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 | `PSP_FAIL_RATE` | 0 | Share of declined charges, 0 to 1 |
 | `PSP_TIMEOUT_MS`, `CONFIRM_TIMEOUT_MS` | 2000, 2000 | Step timeouts; a timeout is an unknown outcome and answers 202 |
 | `PSP_ADMIN` | 0 | `1` enables `POST /admin/psp` |
-| `PAYMENTS_INTERNAL_TOKEN` | `dev-internal-token` | Shared secret the gateway sends in `x-internal-token`. With `NODE_ENV=production` it must be set and not the default, otherwise exit 78 |
+| `PAYMENTS_INTERNAL_TOKEN` | `dev-internal-token` | HMAC key with which the gateway signs its requests (`x-internal-auth`); the key itself is never sent. With `NODE_ENV=production` it must be set and not the default, otherwise exit 78 |
+| `PAYMENTS_INTERNAL_TOKEN_PREVIOUS` | unset | Optional previous key, accepted in addition to the current one during a rotation (deploy payments with both, then the gateway with the new one, then drop the previous). Refused in production when it is the development default |
 | `SEAT_PRICE_CENTS` | 5000 | Price of one seat in cents, an integer from 1 to 100 000 000 (8 seats must fit int4) |
 | `SAGA_RUNS` | 40 | Tests only: number of generated saga scenarios |
 | `SHUTDOWN_DEADLINE_MS` | 10000 | Total time for graceful shutdown, minimum 100 |

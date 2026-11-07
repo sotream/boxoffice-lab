@@ -2,12 +2,13 @@
 // service holds meanwhile, and how long after recovery every payment reaches a final state.
 // Usage: node drills/slow-psp.mjs [slowMs=3000]   (needs inventory 3101 and payments 3103 with PSP_ADMIN=1 running; PAYMENTS_INTERNAL_TOKEN if it is not the dev default; payments is priced by the server)
 import { execSync } from "node:child_process";
+import { signInternal } from "./internal-sign.mjs";
 const SLOW = Number(process.argv[2] ?? 3000), N = 300, CLIENTS = 100;
 const sh = (c) => execSync(c, { encoding: "utf8" }).trim();
 const psql = (q) => sh(`docker exec boxoffice-lab-postgres-1 psql -U lab -tAc "${q}"`);
-const INTERNAL = { "x-internal-token": process.env.PAYMENTS_INTERNAL_TOKEN ?? "dev-internal-token" }; // payments and its admin endpoint need the shared secret
-const post = (url, body, headers = {}, ms = 20000) => fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(ms) });
-const psp = (latencyMs) => post("http://localhost:3103/admin/psp", { latencyMs }, INTERNAL);
+// payments and its admin endpoint need a signed request (the secret itself is never sent)
+const post = (url, body, headers = {}, ms = 20000, sign = false) => { const b = JSON.stringify(body); return fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers, ...(sign ? signInternal("POST", new URL(url).pathname, b) : {}) }, body: b, signal: AbortSignal.timeout(ms) }); };
+const psp = (latencyMs) => post("http://localhost:3103/admin/psp", { latencyMs }, {}, 20000, true);
 const run = Date.now();
 
 await psp(0);
@@ -22,7 +23,7 @@ await Promise.all(Array.from({ length: CLIENTS }, async () => {
   for (let i = next++; i < N; i = next++) {
     const s = Date.now();
     try {
-      const r = await post("http://localhost:3103/payments", { eventId: 1, userId: `s${i}`, seatIds: [10000 + i] }, { "idempotency-key": `slow-${run}-${i}`, ...INTERNAL }, 15000);
+      const r = await post("http://localhost:3103/payments", { eventId: 1, userId: `s${i}`, seatIds: [10000 + i] }, { "idempotency-key": `slow-${run}-${i}` }, 15000, true);
       const b = await r.json().catch(() => ({}));
       const k = `${r.status}${b.status ? ":" + b.status : ""}${b.inProgress ? "(in-progress)" : ""}`;
       codes[k] = (codes[k] ?? 0) + 1;

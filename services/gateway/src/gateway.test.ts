@@ -190,12 +190,13 @@ describe("GatewayService", () => {
       expect(calls).toEqual([]);
     });
 
-    it("the internal token and the key reach payments; a client cannot supply its own token", async () => {
+    it("a signed request and the key reach payments; the secret itself is never sent; a client cannot supply its own signature", async () => {
       const seen: Record<string, string>[] = [];
       const g = new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal" },
         new RateLimiter(redis, 1000, 1000), new RateLimiter(redis, 1000, 1000), async (_url, init) => { seen.push(init.headers); return { status: 200, body: "{}" }; });
       await pay(g, "u", '{"userId":"u","seatIds":[1]}', "key-9");
-      expect(seen[0]["x-internal-token"]).toBe("internal");
+      expect(Object.values(seen[0])).not.toContain("internal");
+      expect(seen[0]["x-internal-auth"]).toMatch(/^\d+\.[0-9a-f]{64}$/);
       expect(seen[0]["idempotency-key"]).toBe("key-9");
     });
   });

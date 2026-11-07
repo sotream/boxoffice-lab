@@ -110,6 +110,13 @@ export class EnvReader {
     return v ?? devDefault;
   }
 
+  /** A secret that may be absent (for example the previous key during a rotation). Refused in production when it is a known development value. */
+  optionalSecret(name: string, forbidden: string[] = []): string | undefined {
+    const v = this.raw(name);
+    if (v !== undefined && this.production && forbidden.includes(v)) this.problems.push(`${name} is set to a known development value; refused when NODE_ENV=production`);
+    return v;
+  }
+
   /** Throws ConfigError when any accessor recorded a problem. */
   done(): void {
     if (this.problems.length) throw new ConfigError([...this.problems]);
