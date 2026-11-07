@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPool, migrate } from "./db";
+import { partitionLag } from "./consumer";
 import { Channel, DeadLetter, InFlight, NotificationHandler, PaymentEvent, Sender } from "./handler";
 
 /**
@@ -275,6 +276,22 @@ describe("consumer: dead-letter routing and partition progress (real consumer.ts
     expect(fake.adminCalls).toBe(after); // stop() ends the sampling
   });
 
+  it("a lag sampler whose first connect fails keeps retrying and recovers when the broker comes back", async () => {
+    const { runConsumer } = await import("./consumer");
+    const { consumerLag } = await import("./metrics");
+    const h = new NotificationHandler(pool, provider(new Map()).send, { maxAttempts: 2, backoffMs: 0 });
+    fake.committed = [{ partition: 9, offset: "10" }];
+    fake.ends = [{ partition: 9, offset: "25", low: "0" }];
+    fake.failAdminConnect = true;
+    const c = await runConsumer(h, { broker: "fake:1", topic: "payments", groupId: "lag-retry", lagSampleMs: 20 });
+    try {
+      await new Promise((r) => setTimeout(r, 100)); // several failed attempts
+      expect((await consumerLag.get()).values.find((v) => v.labels.partition === "9")).toBeUndefined();
+      fake.failAdminConnect = false;
+      await vi.waitFor(async () => expect((await consumerLag.get()).values.find((v) => v.labels.partition === "9")?.value).toBe(15));
+    } finally { fake.failAdminConnect = false; await c.stop(); }
+  });
+
   it("an unreachable admin client does not stop the consumer: it still delivers and stops cleanly", async () => {
     fake.failAdminConnect = true;
     try {
@@ -343,7 +360,6 @@ describe("consumer: dead-letter routing and partition progress (real consumer.ts
   });
 });
 
-import { partitionLag } from "./consumer";
 describe("partitionLag", () => {
   it("is end offset minus committed offset, never negative, and counts from the low watermark when nothing is committed", () => {
     const lag = partitionLag(
