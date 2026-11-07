@@ -11,7 +11,7 @@
     "@boxoffice/admission": "workspace:*",
     "@boxoffice/platform": "workspace:*",
     "fastify": "^5.12.8",
-    "ioredis": "^5.4.0"
+    "ioredis": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^26.0.0",
