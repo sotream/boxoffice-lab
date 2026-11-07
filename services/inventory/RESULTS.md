@@ -26,7 +26,7 @@ Same machine, script and settings, but now on PostgreSQL 18.6, with the instrume
 
 Outcomes (ok / 409): atomic low 36 702 / 9 208, hot 20 / 53 920; for-update low 35 175 / 8 241, hot 20 / 63 879. At hot contention exactly the 20 seats are held in every run.
 
-What changed (single runs, **see the caveat below**: repeated runs and a second environment do not support an ordering cost of this size): `atomic-update` lost about 14 to 16% of its throughput (and p99 rose from 31.7 to 38.4 ms at low contention) while `for-update`, whose SQL did not change, is within noise. The instrumentation and PostgreSQL 18 therefore cost little here; the ordered locking is the visible part, because the single `UPDATE` now takes row locks in a separate sorted step. The price buys a statement that cannot deadlock with `confirm` (ADR 001, `lockorder.test.ts`). The gap between the two strategies at low contention shrank from 22% to about 6%, so the "one statement beats two round trips" argument is much weaker than the first table suggests. The first table is kept above because it is the evidence the original derivation used.
+What changed (single laptop runs, **see the caveat below**): `atomic-update` measured 2 294 RPS against 2 654 before (p99 38.4 against 31.7 ms at low contention), `for-update` 2 168 against 2 182. A difference of this size is inside the measured run-to-run spread of the laptop (up to 2.2x, see [benchmarks](../../docs/benchmarks.md)), so no cost of the instrumentation, of PostgreSQL 18 or of the ordered locking is established, and no gap between the strategies is established either. The ordered statement (the single `UPDATE` takes row locks in a separate sorted step) is kept for deadlock safety, because it cannot deadlock with `confirm` (ADR 001, `lockorder.test.ts`). The first table is kept above because it is the evidence the original derivation used.
 
 ## Second environment (GitHub-hosted runner)
 
@@ -34,5 +34,5 @@ Final code, Postgres 18 defaults, 4 vCPU, 5 runs, median (min-max): atomic low 1
 
 ## Reading
 - Hot seats are *faster* per request: losers get an immediate 409 and no write happens. Throughput of **successful** holds is what drops, so measure both.
-- The strategy gap shows at low contention (extra round trip), and vanishes at high contention.
+- In the first single run `for-update` was slower at low contention (extra round trip); this did not reproduce on the final code or on the runner. At high contention the strategies are indistinguishable.
 - Bottleneck: pool/CPU shared between k6, Node and Postgres on one laptop. Treat ~2 600 RPS as a per-instance planning number, not a production claim.

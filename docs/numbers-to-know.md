@@ -39,14 +39,14 @@ Orders of magnitude to remember (folk knowledge, approximate):
 
 ### Measured in this lab (laptop)
 
-All from the linked `RESULTS.md`. Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5 (the gateway is plain Fastify 5), Postgres 17 and Redis 7 in Docker, k6 on the same machine. These load runs predate the metrics and logging of `@boxoffice/platform` and the move of compose and CI to PostgreSQL 18, and have not been repeated.
+All from the linked `RESULTS.md`. Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5 (the gateway is plain Fastify 5), Postgres 17 and Redis 7 in Docker, k6 on the same machine. These load runs predate the metrics and logging of `@boxoffice/platform` and the move of compose and CI to PostgreSQL 18; only the inventory hold runs were repeated on the final code (see below).
 
 | Component and scenario | Result | Source |
 |---|---|---|
-| Inventory hold, atomic UPDATE, 100k seats, pool 20 | 2 654 RPS, p99 31.7 ms (first version, PostgreSQL 17); 2 294 RPS, p99 38.4 ms on the final code (PostgreSQL 18, instrumented, ordered locks) | [inventory](../services/inventory/RESULTS.md) |
-| Inventory hold, 20 hot seats | 3 222 RPS (losers get an immediate 409) | [inventory](../services/inventory/RESULTS.md) |
+| Inventory hold, atomic UPDATE, 100k seats, pool 20 | 2 654 RPS, p99 31.7 ms (first version, single laptop run, PostgreSQL 17); 2 294 RPS, p99 38.4 ms on the final code (PostgreSQL 18, instrumented, ordered locks) | [inventory](../services/inventory/RESULTS.md) |
+| Inventory hold, 20 hot seats | 3 222 RPS (first version, single laptop run, PostgreSQL 17; losers get an immediate 409) | [inventory](../services/inventory/RESULTS.md) |
 | Waiting room status/join, Redis 7 | 10 134 RPS, p99 22.3 ms | [waiting-room](../services/waiting-room/RESULTS.md) |
-| Gateway hop (IP limiter + proxy) | 2 485 direct -> 2 001 through gateway | [gateway](../services/gateway/RESULTS.md) |
+| Gateway hop (IP limiter + proxy) | 2 485 direct -> 2 001 through gateway (single run each, within laptop run-to-run spread, not a stable cost) | [gateway](../services/gateway/RESULTS.md) |
 | Catalog search, ranked FTS, no cache | 536 RPS, p99 155.6 ms | [catalog](../services/catalog/RESULTS.md) |
 | Catalog search, FTS date order | 3 199 RPS, p99 75.4 ms | [catalog](../services/catalog/RESULTS.md) |
 | Catalog search, ranked FTS + Redis cache | 10 275 RPS, p99 9.0 ms | [catalog](../services/catalog/RESULTS.md) |
@@ -56,7 +56,7 @@ All from the linked `RESULTS.md`. Setup: MacBook Air M1, Node 26, NestJS 12 / Fa
 | Notification consumer, 1 / 3 partitions | 447 / 1 393 deliveries/s | [notifications](../services/notifications/RESULTS.md) |
 | Redis memory per queued user | 7.68 MB for 57 497 queued users: at most 140 B each (includes admitted keys and baseline); planning figure 100 to 150 B | [waiting-room](../services/waiting-room/RESULTS.md) |
 
-The catalog, inventory, waiting-room, gateway and payments figures were re-measured on 2026-11-06 after the upgrade from NestJS 10 / Fastify 4 to NestJS 12 / Fastify 5; the notifications figures were not (that service uses neither). Raw outputs are in `docs/load-output/` and `docs/drill-output/`.
+Only the inventory hold runs were repeated on the final code (PostgreSQL 18, instrumentation, ordered locks), on 2026-11-07. The catalog, inventory, waiting-room, gateway and payments runs of 2026-11-06 followed the upgrade from NestJS 10 / Fastify 4 to NestJS 12 / Fastify 5 but not the platform instrumentation, and the payments and notifications figures are stale (payments predate the `REFUNDING` commit; notifications use neither framework and predate the instrumentation). Most figures here are single laptop runs; repeated-run ranges are in [benchmarks](benchmarks.md). Raw outputs are in `docs/load-output/` and `docs/drill-output/`.
 
 k6 note: with 2 000 virtual users on the same laptop the load generator itself dominates the timings, so the gateway flash-sale run reports counts and invariants only, not percentiles. Always re-measure on target hardware.
 

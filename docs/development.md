@@ -111,7 +111,7 @@ A mutation is an entry in `scripts/mutations.json`:
 1. Make the smallest change that a real bug could look like (drop a check, flip a comparison, remove an `ORDER BY`).
 2. `node scripts/mutation-check.mjs --list` to see the ids, `node scripts/mutation-check.mjs --only <id>` to run one.
 3. It must be killed: the run fails and one of `expectFailingTests` is in the output. If it survives, the tests have a hole: add or sharpen a test (that is the point), do not weaken the mutation.
-4. The runner refuses `services/payments/`, `packages/platform/`, `main.ts`, `db.ts`, `app.module.ts`, `app.ts`, tests and `package.json` files, and restores the file byte for byte even on SIGINT. Details and the current result table: [testing.md](testing.md#mutation-check).
+4. The runner refuses `packages/platform/`, `src/main.ts`, `src/db.ts`, `src/app.module.ts`, `app.ts`, test files and `package.json` files, and restores the file byte for byte even on SIGINT. Details and the current result table: [testing.md](testing.md#mutation-check).
 
 ## Adding a metric (and the consistency rule)
 
