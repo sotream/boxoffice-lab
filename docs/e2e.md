@@ -109,6 +109,8 @@ The default suite crashes processes; it cannot take Postgres, Redis or Redpanda 
 
 Last run (all 11 tests green; counts differ between runs): F1 30 seats promised before the kill, 26 sagas in CHARGED during the outage, 0 refunds, sweeper resumed 26; F2 readiness 503 from 1 to 2 s after the fault until about 0.2 s after the restore (pause and stop), 0 refunds of non-cheaters; F3 backlog 3 rows at the stop, 62 at the end of the 15 s, gauge 62, oldest unpublished 15 s, all 77 events published after, 3 rows in flight at the stop; F4 hold, pay and join refused in 1 ms (stop) or 202 ms (pause), 31 users re-joined after the stop; F6 6 late payers, 6 REFUNDED, 3 of them with a seat somebody else was granted afterwards, 7 seats granted again after expiry; F7 two sweepers resumed 38 and 52 sagas of 45 stuck, both inventories 387 requests each; F9 26 sagas in CHARGED while the table was locked, 448 hold 5xx, 0 refunds.
 
+**In CI.** [e2e-faults.yml](../.github/workflows/e2e-faults.yml) runs the fault suite nightly (03:17 UTC) and on demand (`gh workflow run e2e-faults.yml`); it is not a required check and does not run on every push or pull request, because the scenarios are timing-based, take 6 to 8 minutes and pull a Redpanda image of about 600 MB. Read a red run from the `leak check:` line (a missing or failing line means containers were left behind; the last step lists any `boxoffice-e2e-` containers) and from the name of the failing scenario (F1 to F9), then reproduce it locally with `pnpm test:e2e:faults`.
+
 ### What a Redis outage loses and what it does not (F4, F8)
 
 | | Redis **stopped and started** (no persistence) | Redis **paused**, or a waiting-room process killed |
