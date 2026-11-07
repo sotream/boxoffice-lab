@@ -96,7 +96,7 @@ describe("payments process", () => {
     const { base } = await start({ PSP_ADMIN: "1" });
     const db = new Pool({ connectionString: scratch.url, max: 1 });
     try {
-      const rowsFor = async (key: string) => (await db.query("SELECT user_id, amount_cents FROM payments.payments WHERE idempotency_key=$1", [key])).rows;
+      const rowsFor = async (key: string) => (await db.query("SELECT user_id, amount_cents FROM payments.payments WHERE idempotency_key LIKE $1", [`%:${key}`])).rows.sort((a, b) => a.user_id.localeCompare(b.user_id));
       const post = (path: string, headers: Record<string, string>, body: string) => fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body });
       const good = JSON.stringify({ eventId: 987002, userId: "ops-e2e", seatIds: [1, 2] });
       const key = `ops-e2e-auth-${Date.now()}`;
@@ -125,17 +125,15 @@ describe("payments process", () => {
       expect(first.status).toBe("CONFIRMED");
       expect(await rowsFor(key)).toEqual([{ user_id: "ops-e2e", amount_cents: 2000 }]);
 
-      // the same key and request again: the stored result; another user with that key: 409 without the payment's data
+      // the same key and request again: the stored result; another user with that key gets an independent payment of their own
       const again = await post("/payments", auth, good);
       expect(again.status).toBe(200);
       expect(await again.json()).toEqual(first);
-      const stolen = await post("/payments", auth, JSON.stringify({ eventId: 987002, userId: "mallory", seatIds: [1, 2] }));
-      expect(stolen.status).toBe(409);
-      const stolenBody = await stolen.text();
-      expect(stolenBody).toContain("idempotency key reused with a different request");
-      expect(stolenBody).not.toContain(String(first.paymentId) + '"');
-      expect(stolenBody).not.toContain("CONFIRMED");
-      expect(await rowsFor(key)).toEqual([{ user_id: "ops-e2e", amount_cents: 2000 }]);
+      const other = await post("/payments", auth, JSON.stringify({ eventId: 987002, userId: "mallory", seatIds: [1, 2] }));
+      expect(other.status).toBe(200);
+      const otherBody = await other.json();
+      expect(otherBody.paymentId).not.toBe(first.paymentId);
+      expect(await rowsFor(key)).toEqual([{ user_id: "mallory", amount_cents: 2000 }, { user_id: "ops-e2e", amount_cents: 2000 }]);
     } finally { await db.end(); }
   }, 60_000);
 

@@ -58,6 +58,16 @@ describe("request validation (unchanged rules)", () => {
   });
 });
 
+describe("duplicate seat ids", () => {
+  it("are a 400 before the service (and the card) is touched: one seat is never priced several times", async () => {
+    for (const seatIds of [[5, 5, 5], [1, 2, 1], [3, 3]]) {
+      const { seen, call } = build();
+      await expect(call("k", body({ seatIds })), JSON.stringify(seatIds)).rejects.toBeInstanceOf(BadRequestException);
+      expect(seen, JSON.stringify(seatIds)).toEqual([]);
+    }
+  });
+});
+
 describe("idempotency key scoping", () => {
   it("a key reused with a different request is a 409 that says nothing about the stored payment", async () => {
     const { call } = build(async () => { throw new IdempotencyKeyReused(); });

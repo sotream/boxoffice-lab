@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, it, expect } from "vitest";
 import type { Pool } from "pg";
-import { FAULT_POINTS, FaultPoint, PaymentsService, StepTimeout } from "./payments.service";
+import { FAULT_POINTS, FaultPoint, PaymentsService, StepTimeout, scopedKey } from "./payments.service";
 import { FakePsp, Psp } from "./psp";
 
 type ConfirmAnswer = "yes" | "no" | "timeout";
@@ -103,7 +103,7 @@ export function registerPropertyTests(pool: Pool, numRuns = Number(process.env.S
               if (r.kind === "pay") await svc.pay(reqOf(i));
               else if (r.kind === "sweep") await svc.sweep(-1);
               else {
-                const row = (await pool.query("SELECT id FROM payments.payments WHERE idempotency_key=$1", [`k${i}`])).rows[0];
+                const row = (await pool.query("SELECT id FROM payments.payments WHERE idempotency_key=$1", [scopedKey(`u${i}`, `k${i}`)])).rows[0];
                 if (row) await svc.resume(row.id);
               }
             })().catch(() => undefined)))); // crashes and timeouts surface as rejections; the saga state is what matters

@@ -8,7 +8,13 @@ export class StepTimeout extends Error {}
 export type ConfirmSeats = (eventId: number, seatIds: number[], userId: string) => Promise<boolean>;
 export interface PaymentRequest { idempotencyKey: string; eventId: number; userId: string; seatIds: number[]; amountCents: number }
 export type PaymentView = { id: number; status: string };
-/** The idempotency key exists, but for a different user, event or seat set. Nothing about the stored payment is revealed. */
+/**
+ * The key as stored, looked up and sent to the PSP: scoped by user, so a key chosen by one caller can never collide with
+ * (or block) another caller's. Length-prefixing the user id makes the pair unambiguous: no (user, key) pair can produce the
+ * string of a different pair, whatever characters either contains (user "a:b" + key "c" is "3:a:b:c", user "a" + key "b:c" is "1:a:b:c").
+ */
+export const scopedKey = (userId: string, key: string) => `${userId.length}:${userId}:${key}`;
+/** The idempotency key exists for the same user, but for a different event or seat set. Nothing about the stored payment is revealed. */
 export class IdempotencyKeyReused extends Error {
   constructor() { super("idempotency key reused with a different request"); }
 }
@@ -63,15 +69,16 @@ export class PaymentsService {
   }
 
   async pay(req: PaymentRequest): Promise<Outcome> {
+    const key = scopedKey(req.userId, req.idempotencyKey);
     const ins = await this.pool.query(
       `INSERT INTO payments.payments (idempotency_key, event_id, user_id, seat_ids, amount_cents, trace)
        VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (idempotency_key) DO NOTHING RETURNING id, status`,
-      [req.idempotencyKey, req.eventId, req.userId, req.seatIds, req.amountCents, JSON.stringify(traceFields() ?? null)]
+      [key, req.eventId, req.userId, req.seatIds, req.amountCents, JSON.stringify(traceFields() ?? null)]
     );
     if (ins.rowCount === 0) {
-      // Same key seen before: return the stored result, never charge again. The key is global, so it only identifies
-      // "the same request" if user, event and seats match too; otherwise another caller replaying a key would read this payment.
-      const existing = (await this.pool.query("SELECT id, status, user_id, event_id, seat_ids FROM payments.payments WHERE idempotency_key=$1", [req.idempotencyKey])).rows[0];
+      // Same (user, key) seen before: return the stored result, never charge again. The stored key is scoped by user, so
+      // another caller's key never lands here; the same user must still send the same event and seats.
+      const existing = (await this.pool.query("SELECT id, status, user_id, event_id, seat_ids FROM payments.payments WHERE idempotency_key=$1", [key])).rows[0];
       if (!sameRequest(existing, req)) throw new IdempotencyKeyReused();
       const view = { id: Number(existing.id), status: existing.status as string };
       return this.isFinal(view.status) ? { kind: "done", payment: view } : { kind: "in-progress", payment: view };

@@ -30,6 +30,7 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 |---|---|---|
 | `OPS_PORT` | 3105 | Port of the ops server |
 | `DATABASE_URL` | `postgres://lab:lab@localhost:55432/lab` | Postgres |
+| `PG_POOL` | 20 | Postgres pool size (minimum 1) |
 | `KAFKA_BROKER` | `localhost:59092` | Broker `host:port` |
 | `TOPIC` | `payments` | Topic to consume; the DLQ is `<TOPIC>.dlq` |
 | `GROUP_ID` | `notifications` | Consumer group |

@@ -38,6 +38,27 @@ describe("createPool", () => {
     expect(p.listenerCount("error")).toBeGreaterThan(0);
   });
 
+  it("a checked-out client whose backend is terminated does not crash the process", async () => {
+    const admin = mk({ max: 1 });
+    const p = mk({ max: 2 });
+    const unhandled: unknown[] = [];
+    const h = (e: unknown) => unhandled.push(e);
+    process.on("uncaughtException", h);
+    try {
+      const client = await p.connect();
+      await client.query("BEGIN");
+      const pid = (await client.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      await admin.query("SELECT pg_terminate_backend($1)", [pid]);
+      await new Promise((r) => setTimeout(r, 300));
+      await expect(client.query("SELECT 1")).rejects.toBeTruthy();
+      client.release(true);
+      expect(unhandled).toEqual([]);
+      expect((await p.query("SELECT 1 AS ok")).rows[0].ok).toBe(1);
+    } finally {
+      process.off("uncaughtException", h);
+    }
+  });
+
   it("migrate runs files in name order with the statement timeout off, then restores it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "mig-"));
     writeFileSync(join(dir, "002_b.sql"), "INSERT INTO m_order SELECT 2, current_setting('statement_timeout');");

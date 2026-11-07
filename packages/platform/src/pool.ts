@@ -30,6 +30,10 @@ export function createPool(o: PoolOptions = {}): Pool {
     application_name: o.applicationName,
     idleTimeoutMillis: o.idleTimeoutMs
   });
+  // pg removes its own error listener from a client while it is checked out (inside a transaction, between two queries). If Postgres goes
+  // away at that moment the client emits 'error' with nobody listening and Node kills the process (found by the fault suite: docker stop of
+  // Postgres under load). The failing query still rejects on its own and the dead client is discarded on release.
+  pool.on("connect", (client) => client.on("error", () => undefined));
   pool.on("error", (err) => getLogger().error("idle postgres client error", { err, application: o.applicationName }));
   return pool;
 }

@@ -1,0 +1,33 @@
+name: e2e-faults
+# Nightly and manual only, never a required check (see docs/e2e.md, "Fault suite"). The suite starts its own private
+# Postgres, Redis and Redpanda containers, so this job has no service containers.
+#   gh workflow run e2e-faults.yml
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-faults-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  e2e-faults:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm test:e2e:faults
+      - name: List leftover test containers
+        if: always()
+        run: docker ps -a --filter name=boxoffice-e2e-

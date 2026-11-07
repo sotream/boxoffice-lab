@@ -52,6 +52,8 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: Chec
   const outbox = await stack.q<OutboxRow>(`SELECT id::text, payload, published_at FROM payments.outbox ORDER BY id`);
   const deliveries = await stack.q<DeliveryRow>(`SELECT outbox_id::text, channel, status FROM notifications.deliveries`);
   const byUser = new Map<string, UserRecord>(load.records.map((r) => [r.userId, r]));
+  // payments stores the key scoped by user: `<length of userId>:<userId>:<client key>` (see scopedKey in services/payments)
+  const storedKey = (userId: string, key: string) => `${userId.length}:${userId}:${key}`;
   const payByKey = new Map(pays.map((p) => [p.idempotency_key, p]));
   const seatRow = new Map(seats.map((s) => [s.seat_id, s]));
 
@@ -101,7 +103,7 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: Chec
   for (const r of load.records) {
     if (r.error) v.push(`client ${r.userId} did not finish: ${r.error}`);
     if (r.payStatus === undefined) continue;
-    const p = payByKey.get(r.payKey);
+    const p = payByKey.get(storedKey(r.userId, r.payKey));
     if (!p) { v.push(`client ${r.userId} saw ${r.payStatus} but no payment row exists`); continue; }
     if (p.status !== r.payStatus) v.push(`client ${r.userId} saw ${r.payStatus}, the row says ${p.status}`);
     if (Number(p.id) !== r.paymentId) v.push(`client ${r.userId}: paymentId ${r.paymentId} != row ${p.id}`);
@@ -111,7 +113,7 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: Chec
   const impostors = load.records.filter((r) => r.impostor);
   for (const r of impostors) {
     if (r.impostor!.status !== 403) v.push(`(g) impostor ${r.userId} put ${r.impostor!.victim} in the pay body and got ${r.impostor!.status}, expected 403`);
-    if (payByKey.has(r.payKey)) v.push(`(g) impostor ${r.userId}: a payment row exists for its key although the gateway refused it`);
+    if (payByKey.has(storedKey(r.userId, r.payKey))) v.push(`(g) impostor ${r.userId}: a payment row exists for its key although the gateway refused it`);
     if (pays.some((p) => p.user_id === r.userId)) v.push(`(g) impostor ${r.userId} has a payment row`);
   }
   const clientPayers = load.records.filter((r) => r.payStatus !== undefined).length;
@@ -192,7 +194,7 @@ export async function checkInvariants(stack: Stack, load: LoadResult, opts: Chec
   // ---- (f) the x-request-id sent by the client at the purchase follows it into the broker headers ---------------------------------
   for (const r of load.records) {
     if (r.payStatus === undefined) continue;
-    const p = payByKey.get(r.payKey);
+    const p = payByKey.get(storedKey(r.userId, r.payKey));
     if (!p) continue;
     if (p.trace?.requestId !== r.payRid) v.push(`(f) payment ${p.id}: stored trace ${p.trace?.requestId} != client x-request-id ${r.payRid}`);
     const o = outByPayment.get(Number(p.id))?.[0];
