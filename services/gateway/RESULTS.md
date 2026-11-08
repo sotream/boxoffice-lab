@@ -1,6 +1,6 @@
 # gateway: measured results
 
-*Measurement status: these figures were measured before `@boxoffice/platform` (metrics, JSON logging, trace context) existed, and have not been repeated. The inventory behind the gateway ran on PostgreSQL 17 at that time. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
+*Measurement status: these figures were measured before `@boxoffice/platform` (metrics, JSON logging, trace context) existed, and the hop was repeated on the final code on 2026-11-08 (M1 Air and M4 Pro, 5 000 seats): see [benchmarks](../../docs/benchmarks.md#gateway-hop) and the M4 Pro section there; the flash-sale run below was not repeated. The inventory behind the gateway ran on PostgreSQL 17 at that time. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
 
 Setup: MacBook Air M1, Node 26, gateway on plain Fastify 5 in front of inventory (NestJS 12 / Fastify 5), all services, Postgres and Redis on one machine, k6 on the same machine.
 
