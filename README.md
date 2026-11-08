@@ -21,7 +21,7 @@
   <a href="docs/playbook/README.md"><b>Playbook</b></a> &middot;
   <a href="#proof-not-claims">Proof</a> &middot;
   <a href="#question-service-decision-number">Services</a> &middot;
-  <a href="#architecture-and-the-flash-sale">Architecture</a> &middot;
+  <a href="#proof-not-claims">Architecture</a> &middot;
   <a href="#quick-start">Quick start</a> &middot;
   <a href="docs/adr-index.md">ADRs</a> &middot;
   <a href="docs/failure-drills.md">Failure drills</a> &middot;
@@ -41,7 +41,7 @@ A design playbook for workload-driven architecture decisions, built as running c
 
 The layer above the services is the [playbook](docs/playbook/README.md): it maps workload shapes to architectures and trigger numbers, and it labels every figure as `measured`, `derived`, `folk` or `paper design`. It is written for someone who has to say "I would use X because of Y, and here is the number".
 
-**In two minutes:** read the table [below](#question-service-decision-number) (question, service, decision, number), look at the [architecture picture](#architecture-and-the-flash-sale), then run `pnpm test` ([quick start](#quick-start)). Every number is either derived on paper from stated assumptions ([`packages/capacity`](packages/capacity/src/index.ts) holds the formulas) or measured by a load script whose raw output is saved in [`docs/load-output/`](docs/load-output/); where they disagree, the disagreement is written down.
+**In two minutes:** read the table [below](#question-service-decision-number) (question, service, decision, number), look at the [architecture picture](#proof-not-claims), then run `pnpm test` ([quick start](#quick-start)). Every number is either derived on paper from stated assumptions ([`packages/capacity`](packages/capacity/src/index.ts) holds the formulas) or measured by a load script whose raw output is saved in [`docs/load-output/`](docs/load-output/); where they disagree, the disagreement is written down.
 
 ## Proof, not claims
 
