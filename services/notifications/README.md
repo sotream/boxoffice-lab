@@ -48,6 +48,9 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 - Invalid configuration exits with code 78 and one message listing every problem ([Configuration and boot](../../docs/operations.md#configuration-and-boot)).
 - Runbooks for the drills that hit this service: [operations.md](../../docs/operations.md#runbooks).
 
+## Load
+`load/bench.js` (after `pnpm build`, needs Postgres and Redpanda) produces events to a fresh 3-partition topic and consumes them in-process; `PARTS=1` or `PARTS=3` sets how many partitions are consumed at once. `scripts/bench.sh notifications [runs]` runs both and prints time, deliveries/s and the integrity checks (sent vs expected, duplicate rows, dead letters, provider calls) ([benchmarks.md](../../docs/benchmarks.md#method)).
+
 ## Tests
 `docker compose up -d postgres && pnpm --filter @boxoffice/notifications test` (unit and property tests use a fake `kafkajs`; only `src/ops.e2e.test.ts` needs Redpanda on :59092, so use `docker compose up -d` for the whole package).
 - `src/handler.test.ts`: dedup, lease, retries, `InFlight`. `src/properties.test.ts`: random messages with duplicates and flaky providers (the set of successful sends equals the set of unique `outboxId:channel` keys), concurrent duplicates, and the real `consumer.ts` against a fake broker (DLQ routing, offsets always resolved). Replay with `FC_SEED=<seed>`.

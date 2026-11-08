@@ -4,12 +4,14 @@ The `RESULTS.md` files of the services each report one run on one MacBook Air M1
 
 ## Method
 
-`scripts/bench.sh <scenario> [runs=3]` with scenario `inventory`, `waiting-room`, `payments`, `catalog` or `all`:
+`scripts/bench.sh <scenario> [runs=3]` with scenario `inventory`, `waiting-room`, `payments`, `catalog`, `gateway`, `notifications` or `all`:
 
-- starts the built services itself (`node dist/main.js` from each package, the environment of the existing `load/run.sh` scripts: `SEED_SEATS=100000 PG_POOL=20` for inventory, `SEED_EVENTS=200000` for catalog, `PSP_LATENCY_MS` 100 and 0 for payments);
+- starts the built services itself (`node dist/main.js` from each package, the environment of the existing `load/run.sh` scripts: `SEED_SEATS=100000 PG_POOL=20` for inventory, `SEED_EVENTS=200000` for catalog, `PSP_LATENCY_MS` 100 and 0 for payments; for `gateway`, inventory with the inventory settings and the gateway with `IP_RATE=100000 IP_BURST=100000`, the values of the e2e Stack);
 - waits for `/readyz` instead of sleeping, refuses to start when the port already answers, and kills everything it started on exit (`trap EXIT`);
-- runs the unchanged k6 scripts (`load/hold.js`, `join.js`, `pay.js`, `search.js`) N times with `--summary-export` and prints one Markdown row per scenario row: median, min and max of RPS, p95 and p99, plus failed requests, failed checks and how many runs breached a k6 threshold;
+- runs the unchanged k6 scripts (`load/hold.js`, `join.js`, `pay.js`, `search.js`, `overhead.js`) N times with `--summary-export` and prints one Markdown row per scenario row: median, min and max of RPS, p95 and p99, plus failed requests, failed checks and how many runs breached a k6 threshold;
 - keeps runs independent: inventory gets a fresh process and a re-seeded table per run; waiting-room uses a flushed Redis logical database (`BENCH_REDIS_DB`, default 12) because user ids repeat between runs; payments truncates `payments.payments` and `payments.outbox` before each run because idempotency keys repeat (otherwise a second run would replay stored results); catalog flushes the cache database before each run. Payments also starts inventory, as the saved payments run did, so that the seat confirm fails and every payment takes the compensation path. Payments needs Redpanda (`docker compose up -d`);
+- `gateway` has two rows from `services/gateway/load/overhead.js` (GET availability, 50 VUs, 15 s): `direct to inventory` (`BASE=http://localhost:3101`) and `through gateway` (`BASE=http://localhost:3100`). It starts only inventory and the gateway (waiting-room and payments are not touched by that route; the gateway's `/readyz` is on its ops port 3106) and flushes the Redis database before each gateway run. Inventory requires signed requests: the script signs the direct request and the gateway signs its own, both with `INVENTORY_INTERNAL_TOKEN` (development default unless exported). The gateway's per-IP limiter is **effectively off** for the measurement (limit 100 000 requests per second, burst 100 000) so that it does not cap throughput; the limiter and its Redis round trip are still in the path, so the row measures proxy plus limiter, not the limit. A 429 would show up under failed requests;
+- `notifications` is not a k6 scenario: `services/notifications/load/bench.js` is one node process that creates a fresh 3-partition topic, produces 21 010 events (20 000 unique, 1 000 duplicates, 10 poison), consumes them in-process with `PARTS=1` and `PARTS=3` partitions at once (provider 20 ms, `CONCURRENCY` 25, as the saved run) and prints one JSON line. `bench.sh` runs it N times per row and prints time and deliveries/s (median, min, max) together with the integrity checks of every run: deliveries sent against expected, duplicate `(event, channel)` rows, dead letters (10 expected) and provider calls; a run that fails a check is counted in the last column. Needs Postgres and Redpanda (`docker compose up -d`) but not k6. It truncates `notifications.deliveries` before each run and after the last one, and on exit removes leftover `payments-bench-*` topics and `g-*` groups. `N`, `SENDER_LATENCY_MS` and `CONCURRENCY` pass through to the script; the saved run's partition count is fixed at 3 by the script. `BENCH_CPU=1` samples the bench process as `node`;
 - flushes and truncates through the container that publishes port 56379 or 55432 (works for compose and for CI service containers; override with `REDIS_CONTAINER` and `PG_CONTAINER`). If no Redis container is found the flush is skipped with a note on stderr;
 - checks the 1-minute load average before every run, logs it to `load.log`, waits up to 60 s while it is above 4 (`BENCH_MAX_LOAD`, `BENCH_LOAD_WAIT`) and then goes ahead and says so;
 - writes the raw k6 summaries (`*.json`, plus the k6 exit code), `table.md` and `load.log` to `BENCH_OUT` (default `./bench-out`, gitignored). `VUS` and `DURATION` pass through to k6 for shorter smoke runs;
@@ -19,12 +21,14 @@ The `RESULTS.md` files of the services each report one run on one MacBook Air M1
 ```bash
 docker compose up -d && pnpm build
 scripts/bench.sh inventory 3
+scripts/bench.sh gateway 3
+scripts/bench.sh notifications 3
 BENCH_OUT=/path/to/dir scripts/bench.sh all 5
 ```
 
 ### GitHub-hosted runner
 
-`.github/workflows/bench.yml` is `workflow_dispatch` only. It starts the same Postgres 18 and Redis 7 service containers as CI (Redpanda by hand only for `payments` and `all`), installs k6 2.3.0 with `grafana/setup-k6-action@v1`, logs `lscpu`, `nproc`, `free -m`, kernel, Node, k6 and Postgres versions to the job summary, runs `scripts/bench.sh`, appends the tables to the job summary and uploads `bench-out` as an artifact (90 days).
+`.github/workflows/bench.yml` is `workflow_dispatch` only. It starts the same Postgres 18 and Redis 7 service containers as CI (Redpanda by hand only for `payments`, `notifications` and `all`), installs k6 2.3.0 with `grafana/setup-k6-action@v1`, logs `lscpu`, `nproc`, `free -m`, kernel, Node, k6 and Postgres versions to the job summary, runs `scripts/bench.sh`, appends the tables to the job summary and uploads `bench-out` as an artifact (90 days).
 
 ```bash
 gh workflow run bench.yml -f scenario=inventory -f runs=3

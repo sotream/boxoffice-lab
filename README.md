@@ -149,9 +149,9 @@ Load scripts (run from the service directory, after `pnpm build`; each service R
 | catalog | `cd services/catalog && load/run.sh` (seeds 200 000 events, runs all six scenarios; needs the Redis container name `boxoffice-lab-redis-1`) |
 | waiting-room | start with `pnpm --filter @boxoffice/waiting-room start`, then `k6 run services/waiting-room/load/join.js` (`VUS`, `DURATION`, `BASE`) |
 | payments | start with `pnpm --filter @boxoffice/payments start`, then `k6 run services/payments/load/pay.js` (`VUS`, `DURATION`, `BASE`) |
-| gateway overhead | start inventory (3101) and gateway (3100), then `BASE=http://localhost:3101 k6 run services/gateway/load/overhead.js` and again with `BASE=http://localhost:3100` |
+| gateway overhead | start inventory (3101) and gateway (3100), then `BASE=http://localhost:3101 k6 run services/gateway/load/overhead.js` and again with `BASE=http://localhost:3100`; repeatable with `scripts/bench.sh gateway` (raise `IP_RATE` and `IP_BURST` of the gateway for a manual run, see [benchmarks.md](docs/benchmarks.md#method)) |
 | gateway flash sale | start inventory with `SEED_SEATS=5000`, waiting-room, gateway, then `k6 run services/gateway/load/flash-sale.js` (`USERS`, `SEATS`, `BASE`, `ARRIVAL_SPREAD_S`, default 3) |
-| notifications | `cd services/notifications && node load/bench.js` (needs postgres and redpanda up) |
+| notifications | `cd services/notifications && node load/bench.js` (needs postgres and redpanda up; `PARTS=1` or `PARTS=3`), or `scripts/bench.sh notifications` for both rows with the integrity checks |
 
 Load scripts and drills write to the shared databases and stop containers: do not run them at the same time as the tests ([development.md](docs/development.md#troubleshooting-shared-database-races)).
 

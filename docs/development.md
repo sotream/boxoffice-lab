@@ -80,7 +80,7 @@ Commands and variables per service are in the [README quick start](../README.md#
 - `load/run.sh` of inventory and catalog start the service themselves and seed data (100 000 seats for event 1; 200 000 catalog events): they overwrite those tables.
 - The catalog script uses the container name `boxoffice-lab-redis-1`.
 - k6 and the server share the machine in the saved runs, so latency under a high VU count is dominated by the load generator; compare like with like and read the caveats in each `RESULTS.md`.
-- `scripts/bench.sh <scenario> [runs]` runs the same k6 scripts several times and reports median, min and max; method and results: [benchmarks.md](benchmarks.md).
+- `scripts/bench.sh <scenario> [runs]` (scenarios `inventory`, `waiting-room`, `payments`, `catalog`, `gateway`, `notifications`, `all`) runs the same k6 scripts (for `notifications`: `load/bench.js`) several times and reports median, min and max; method and results: [benchmarks.md](benchmarks.md).
 - Saved raw output is in `docs/load-output/`. The figures in the `RESULTS.md` files predate the platform instrumentation and were measured on PostgreSQL 17; a new run on the current stack is a new measurement, not a confirmation.
 
 ## Writing a property test

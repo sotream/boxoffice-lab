@@ -4,6 +4,8 @@
 
 Setup: MacBook Air M1, Redpanda (3 partitions) and Postgres in Docker. `load/bench.js` produces 21 010 events: 20 000 unique, 1 000 duplicate deliveries, 10 poison messages (invalid JSON). 10% of events are `payment.failed` (push only). Fake provider with 20 ms latency; every 201st event's email fails twice before succeeding.
 
+These figures predate the final code; `scripts/bench.sh notifications` now reproduces both rows, with the integrity checks below, over repeated runs ([benchmarks.md](../../docs/benchmarks.md#method)).
+
 | Partitions consumed at once | Time | Deliveries/s |
 |---|---|---|
 | 1 | 85.1 s | 447 |

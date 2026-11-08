@@ -7,7 +7,7 @@ on:
       scenario:
         description: Which scenario to run
         type: choice
-        options: [inventory, waiting-room, payments, catalog, all]
+        options: [inventory, waiting-room, payments, catalog, gateway, notifications, all]
         default: inventory
       runs:
         description: Runs per row (the table shows median, min and max)
@@ -48,9 +48,9 @@ jobs:
       - uses: grafana/setup-k6-action@v1
         with:
           k6-version: "2.3.0"
-      # Redpanda is only needed by payments (its outbox relay publishes to Kafka); same start as ci.yml.
+      # Redpanda is needed by payments (its outbox relay publishes to Kafka) and by notifications (load/bench.js); same start as ci.yml.
       - name: Start Redpanda
-        if: inputs.scenario == 'payments' || inputs.scenario == 'all'
+        if: inputs.scenario == 'payments' || inputs.scenario == 'notifications' || inputs.scenario == 'all'
         run: |
           docker run -d --name redpanda -p 59092:59092 redpandadata/redpanda:v24.2.7 \
             redpanda start --smp=1 --memory=512M --overprovisioned --node-id=0 \
