@@ -5,3 +5,5 @@ dist
 .claude/worktrees
 coverage
 bench-out/
+bench-out-*/
+ab-out/
