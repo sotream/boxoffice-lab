@@ -184,7 +184,7 @@ The two unsigned runs differ from each other by at most 2.5% per row, so the dri
 
 What was measured directly for the HMAC: a Node microbenchmark of `signInternalRequest` / `verifyInternalRequest` with a 45-byte body (300 000 calls after a warm-up, on a busy machine) gave 2.4 microseconds to sign and 3.2 to verify. Inventory spends about 170 microseconds of CPU per request at these rates (56% of a core at 3 300 RPS) and only verifies, so the HMAC is about 2% of that; the rest of the 3.6% is the body handling and the caller's side of the signing.
 
-**Payments with the ownership check on is not in this table**: `bench.sh` starts payments with `VERIFY_HOLDS=0` because `load/pay.js` pays for seats nobody holds (see payments ADR 007), so the extra inventory round trip per payment was not measured.
+**Payments with the ownership check on is not in this table**: `bench.sh` starts payments with `VERIFY_HOLDS=0` because `load/pay.js` pays for seats nobody holds (see payments ADR 007), so the extra inventory round trip per payment was not measured in that run. `scripts/bench.sh payments-verify` now measures it (`pay.js` with `HELD=1`: seats are held in SQL before each run, the check is on, every payment ends CONFIRMED); it is meant to be run on the M4 Pro and has no published numbers yet. It does different work from the `payments` rows (confirmed path with one PSP call versus compensation with two and a refund), so the two are not a before-and-after pair.
 
 ### Gateway hop
 

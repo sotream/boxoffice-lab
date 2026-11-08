@@ -22,7 +22,7 @@ The same scenario on an M4 Pro (commit `90b6a5a`, 3 runs): 475 RPS at 100 ms (p9
 
 CPU during the runs (`ps`, percent of one core, mean with peak in brackets), M1: at PSP 0 ms the Docker VM (Postgres, Redpanda and Redis together) 341 (455), the payments Node process 83 (132), k6 15 (21); at PSP 100 ms the VM 219 (313), Node 56 (74), k6 10 (18). The database side of the VM is the largest consumer and Node is well under its one core, which is consistent with the earlier statement that the commits, not the application code, set the ceiling; the VM figure does not isolate Postgres from Redpanda and Redis, so that remains an inference.
 
-Since [ADR 007](adr/007-verify-holds-before-charging.md) payments checks ownership before it charges; `load/pay.js` pays for seats nobody holds, so `scripts/bench.sh` starts payments with `VERIFY_HOLDS=0` to keep measuring the compensation path (with the check on, every request would be a cheap FAILED). The figures above were taken before the check existed and are comparable with the benchmark as it runs now.
+Since [ADR 007](adr/007-verify-holds-before-charging.md) payments checks ownership before it charges; `load/pay.js` pays for seats nobody holds, so `scripts/bench.sh` starts payments with `VERIFY_HOLDS=0` to keep measuring the compensation path (with the check on, every request would be a cheap FAILED). The scenario with the check on is `scripts/bench.sh payments-verify` (seats pre-held in SQL, `HELD=1`, CONFIRMED path); its figures are not recorded here yet. The figures above were taken before the check existed and are comparable with the benchmark as it runs now.
 
 The integrity queries below were run on the PostgreSQL 17 data; this re-measurement checked failed requests and thresholds only.
 

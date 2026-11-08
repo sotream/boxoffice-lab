@@ -906,5 +906,38 @@
       "carry a signature over the exact method, path and body"
     ],
     "description": "payments signs confirm with a hard-coded key instead of the configured inventory key"
+  },
+  {
+    "id": "wr-503-retry-after",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/queue.controller.ts",
+    "find": "    reply.header(\"retry-after\", \"1\");\n    throw new ServiceUnavailableException",
+    "replace": "    throw new ServiceUnavailableException",
+    "expectFailingTests": [
+      "join and status answer 503 with Retry-After"
+    ],
+    "description": "waiting-room answers 503 for an unreachable Redis but without Retry-After"
+  },
+  {
+    "id": "wr-503-mapping",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/queue.controller.ts",
+    "find": "    if (!isRedisUnavailable(e)) throw e;\n",
+    "replace": "    throw e;\n",
+    "expectFailingTests": [
+      "join and status answer 503 with Retry-After"
+    ],
+    "description": "waiting-room no longer maps an unreachable Redis to 503 (a 500 instead)"
+  },
+  {
+    "id": "wr-timeout-not-recognised",
+    "package": "@boxoffice/waiting-room",
+    "file": "services/waiting-room/src/redis-unavailable.ts",
+    "find": "const UNAVAILABLE = /^Command timed out$|^Connection is closed|",
+    "replace": "const UNAVAILABLE = /^Connection is closed|",
+    "expectFailingTests": [
+      "a queue call rejects after the command timeout"
+    ],
+    "description": "a Redis command that outlived the command timeout is no longer recognised as 'unavailable', so the controller answers 500 instead of 503"
   }
 ]
