@@ -79,6 +79,15 @@ describe("GatewayService", () => {
     expect((await g.handle("GET", "/events/1/availability", "", undefined, "ip")).status).toBe(504);
   });
 
+  it("a 503 from an upstream keeps its Retry-After for the client; other statuses get no such header", async () => {
+    const mk = (up: Upstream) => new GatewayService({ inventoryUrl: "http://inv", queueUrl: "http://q", paymentsUrl: "http://pay", secret, internalToken: "internal", inventoryInternalToken: "inventory-internal" },
+      new RateLimiter(redis, 1000, 1000), new RateLimiter(redis, 1000, 1000), up);
+    const r = await mk(async () => ({ status: 503, body: '{"e":1}', retryAfter: "1" })).handle("POST", "/events/1/queue/join", "", "{}", "ip");
+    expect(r).toMatchObject({ status: 503, headers: { "retry-after": "1" } });
+    expect((await mk(async () => ({ status: 503, body: "{}", retryAfter: null })).handle("POST", "/events/1/queue/join", "", "{}", "ip")).headers).toBeUndefined();
+    expect((await mk(async () => ({ status: 429, body: "{}", retryAfter: "7" })).handle("POST", "/events/1/queue/join", "", "{}", "ip")).headers).toBeUndefined();
+  });
+
   it("404 for unknown paths", async () => {
     expect((await make().handle("GET", "/admin", "", undefined, "ip")).status).toBe(404);
   });

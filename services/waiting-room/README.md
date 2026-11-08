@@ -29,6 +29,7 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 |---|---|---|
 | `PORT` | 3102 | HTTP port |
 | `REDIS_URL` | `redis://localhost:56379` | Redis |
+| `REDIS_COMMAND_TIMEOUT_MS` | 1000 | Deadline of each Redis command on the request path, readiness and metrics (50 to 7000). A command that does not answer in time (a silent network partition, a hung Redis) makes `join` and `status` answer `503` with `Retry-After: 1` instead of waiting for the gateway's 8 s timeout. Not applied to the admission tick, see Operations |
 | `ADMISSION_SECRET` | `dev-secret` | HMAC key shared with the gateway. With `NODE_ENV=production` it must be set and not `dev-secret`, otherwise the process exits 78 |
 | `ADMIT_PER_SECOND` | 500 | Admission budget; the tick admits a tenth of it every 100 ms for event 1 |
 | `SHUTDOWN_DEADLINE_MS` | 10000 | Total time for graceful shutdown, minimum 100 |
@@ -37,6 +38,7 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 
 ## Operations
 - Every process serves `GET /healthz` (liveness, never calls a dependency), `GET /readyz` (readiness) and `GET /metrics` (Prometheus) on `PORT`. Readiness: Redis is critical (the queue lives there).
+- Redis unavailable: `POST /queue/join` and `GET /queue/status` answer `503` with `Retry-After: 1` (the answer clients already retry; the gateway passes the header on) when a Redis command times out or the connection is refused or closed; other errors stay `500`. The admission tick uses its own Redis client without a command timeout: a `ZPOPMIN` that timed out could still run at the heal and pop users without writing their admission keys, so during a silent partition the tick waits on one command and resumes when the path heals (it counts no error meanwhile; watch `/readyz` and `waitingroom_admitted_total`). Measured in [F14](../../docs/e2e.md#redis-clients-in-a-silent-partition-f13-f14).
 - Metrics of this service: `waitingroom_joins_total{result}`, `waitingroom_admitted_total`, `waitingroom_admission_errors_total`, `waitingroom_queue_length` (event 1), `http_*`. Series definitions: the generated table in [operations.md](../../docs/operations.md#metric-catalogue).
 - Logs are JSON lines on stdout with `requestId`, `traceId` and `spanId`; `x-request-id` and `traceparent` are accepted and propagated ([Correlation](../../docs/operations.md#correlation-one-id-per-purchase)).
 - Shutdown (SIGTERM or SIGINT): goes not-ready, drains requests, stops the admission tick, closes Redis. All steps share `SHUTDOWN_DEADLINE_MS`; a second signal exits 1 at once ([Graceful shutdown](../../docs/operations.md#graceful-shutdown)).

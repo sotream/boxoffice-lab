@@ -9,7 +9,7 @@ export function routeOf(path: string): string {
   return m ? `/events/:eventId/${m[1]}` : "unmatched";
 }
 
-export type Upstream = (url: string, init: { method: string; body?: string; headers: Record<string, string> }) => Promise<{ status: number; body: string }>;
+export type Upstream = (url: string, init: { method: string; body?: string; headers: Record<string, string> }) => Promise<{ status: number; body: string; retryAfter?: string | null }>;
 export interface Reply { status: number; body: string; headers?: Record<string, string> }
 
 export interface GatewayConfig {
@@ -105,7 +105,8 @@ export class GatewayService {
         method, body: sendBody,
         headers: { "content-type": "application/json", "x-forwarded-for": forwardedFor, ...outgoingHeaders(), ...inventoryAuth, ...prepared.headers }
       });
-      return { status: res.status, body: res.body };
+      // a 503 from an upstream says when to come back (the waiting room when its Redis does not answer): keep that hint for the client
+      return { status: res.status, body: res.body, ...(res.status === 503 && res.retryAfter ? { headers: { "retry-after": res.retryAfter } } : {}) };
     } catch (e) {
       upstreamErrors.inc({ upstream: upstreamName, reason: (e as Error)?.name === "TimeoutError" ? "timeout" : "unreachable" });
       return { status: 504, body: '{"error":"upstream timeout or unreachable"}' }; // bounded wait instead of a hanging connection

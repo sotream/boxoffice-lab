@@ -99,7 +99,7 @@ describe("fault 14: the network between the waiting room and Redis silently drop
     const slowest = (k: "join" | "status") => Math.max(...of(k).map((x) => x.ms));
     const fmt = (x: Timed) => `${x.status}/${x.retryAfter}/${x.ms}`;
     console.log("net redis waiting room partition:", quiet, JSON.stringify({
-      partitionMs: healedAt - t0, probes: probes.length, recoveredMs, readyAgain, bytesUp: proxy.bytesUp, errors: errors.length, admittedBefore, admittedAfter, admissionErrorsDuring: errorsDuring, scrapeDuringMs: scrapeDuring.ms, admissionErrorsAfter: errorsAfter,
+      partitionMs: healedAt - t0, probes: probes.length, recoveredMs, readyAgain, bytesUp: proxy.bytesUp, errors: errors.length, admittedBefore, admittedAfter, admissionErrorsDuring: errorsDuring, scrapeDuringMs: scrapeDuring.ms, admissionErrorsAfter: errorsAfter, unknownRejoins: result.stats.get("queue:unknown-rejoin") ?? 0,
       baseline: { join: fmt(baseline.join), status: fmt(baseline.status) },
       durings: { join: of("join").map(fmt), status: of("status").map(fmt) },
       healthz: wrHealth.map(fmt), readyz: wrReady.map((x) => `${x.status}/${x.ms}/${redisOk(x.body)}`),
@@ -122,8 +122,8 @@ describe("fault 14: the network between the waiting room and Redis silently drop
     for (const x of wrReady) { expect(x.status, "readyz during the partition").toBe(503); expect(x.ms).toBeLessThan(4_000); expect(redisOk(x.body)).toBe(false); }
     expect(alive.filter(([, up]) => !up)).toEqual([]);
     expect(scrapeDuring.ms, "a metrics scrape must not hang on Redis").toBeLessThan(4_000);
-    // the admission tick saw the errors and did not die: it admits again after the heal
-    expect(errorsDuring, "admission tick errors during the partition").toBeGreaterThan(0);
+    // the admission tick has its own client without a deadline (a timed-out ZPOPMIN would still be executed at the heal and lose its users): it stalls on its
+    // one in-flight command during the partition, does not die, and admits again after the heal. No user is left popped without a key (see "unknownRejoins").
     // recovery without a restart
     expect(recoveredMs, "the waiting room did not recover after the heal").toBeGreaterThanOrEqual(0);
     expect(recoveredMs).toBeLessThan(10_000);
