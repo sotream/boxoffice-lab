@@ -43,6 +43,7 @@ jobs:
       - run: pnpm build
       - run: pnpm ops:check
       - run: pnpm mutation:validate
+      - run: pnpm docs:links
       # Packages share one Postgres and one Redis, so they run one after another (see docs/testing.md).
       # Coverage thresholds live in each package's vitest.config.ts.
       - run: pnpm test:coverage

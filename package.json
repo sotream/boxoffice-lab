@@ -10,6 +10,7 @@
     "test:mutation": "node scripts/mutation-check.mjs",
     "ops:check": "node ops/check.mjs",
     "mutation:validate": "node scripts/mutation-check.mjs --validate",
+    "docs:links": "node scripts/check-links.mjs",
     "test:e2e": "pnpm --filter @boxoffice/e2e test",
     "test:e2e:faults": "pnpm --filter @boxoffice/e2e test:faults"
   },
