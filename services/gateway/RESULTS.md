@@ -12,6 +12,14 @@ These figures predate the final code (signed requests to inventory, `@boxoffice/
 | direct to inventory | 2 485 | 18.6 | 30.9 | 43.0 |
 | through gateway (IP limiter + proxy) | 2 001 | 22.8 | 41.2 | 58.1 |
 
+### Re-measured on the final code (2026-11-08, M1 Air, PostgreSQL 18, 5 000 seats, 3 runs, a noisier machine)
+| Path | RPS median (min-max) | p95 ms | p99 ms |
+|---|---|---|---|
+| direct to inventory | 3 898 (1 955-3 953) | 21.4 | 31.6 |
+| through gateway (IP limiter + proxy) | 2 984 (2 866-3 039) | 27.5 | 41.4 |
+
+The hop costs about 23% of the throughput and about 6 ms at p95 (19% in the table above). Inventory now requires a signed request, so the direct row includes k6 signing and inventory verifying it, and the gateway row includes the gateway signing its forwarded request. Details, the seat count and the load during the runs: [benchmarks](../../docs/benchmarks.md#final-code-on-the-m1-air-request-signing-the-ownership-check-gateway-and-notifications). The flash-sale numbers below were not repeated.
+
 ## Flash sale end to end (`load/flash-sale.js`)
 2 000 users join, wait for admission (500/s), then each tries 3 random seats out of 5 000. Arrivals are spread over `ARRIVAL_SPREAD_S` seconds (default 3); 0 means all 2 000 dial in the same millisecond. Three saved runs (raw output in `docs/load-output/gateway.txt`):
 

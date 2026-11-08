@@ -12,6 +12,7 @@
 #                    container publishing port 56379 / 55432 (works for compose and for CI service containers).
 #   DATABASE_URL     used with psql for the payments cleanup if psql exists (default postgres://lab:lab@localhost:55432/lab)
 #   BENCH_MAX_LOAD   1-minute load average above which a run waits (default 4, up to BENCH_LOAD_WAIT=60 s), then proceeds
+#   GATEWAY_BENCH_SEATS  seats seeded for the gateway scenario (default 5000; availability scans them all on every request)
 #   VUS, DURATION    passed through to k6 unchanged (the scripts' own defaults apply when unset)
 #   BENCH_CPU        1 = sample per-process CPU during each k6 run (default off): node, k6, postgres, redis-server and
 #                    the VM/container layer (macOS com.apple.Virtualization.VirtualMachine, Linux dockerd, containerd-shim),
@@ -307,7 +308,9 @@ bench_catalog() {
 bench_gateway() {
   table_begin "gateway (load/overhead.js, script defaults 50 VUs, 15 s, GET availability; IP limiter effectively off)"
   local r prefix inv
-  start_service inventory 3101 SEED_SEATS=100000 PG_POOL=20
+  # GET availability counts the seats of the event on every request (a scan, not a point read): 100 000 seats would make this scenario measure that scan
+  # (about 380 RPS on an M1) instead of the hop. 5 000 seats is the size of services/gateway/load/flash-sale.js; GATEWAY_BENCH_SEATS overrides it.
+  start_service inventory 3101 SEED_SEATS="${GATEWAY_BENCH_SEATS:-5000}" PG_POOL=20
   inv=$SVC_PID
   prefix="$OUT/gateway-direct"; rm -f "$prefix".run*
   for r in $(seq 1 "$RUNS"); do
