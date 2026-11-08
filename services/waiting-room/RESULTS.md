@@ -1,6 +1,6 @@
 # waiting-room: measured results
 
-*Measurement status: these figures were measured before `@boxoffice/platform` (metrics, JSON logging, trace context) existed and have not been repeated with the instrumentation. The waiting room uses Redis only. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
+*Measurement status: these figures were measured before `@boxoffice/platform` (metrics, JSON logging, trace context) existed and were repeated with the instrumentation on the M1 Air, the M4 Pro and a GitHub runner (see [benchmarks](../../docs/benchmarks.md)), where the rows say which figure is which. The waiting room uses Redis only. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
 
 Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5, Redis 7 in Docker, k6 100 VUs, 20 s. Each iteration: 1 join + 2 status polls (3 requests). Script `load/join.js`.
 

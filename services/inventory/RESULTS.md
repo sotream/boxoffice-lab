@@ -1,6 +1,6 @@
 # inventory: measured results
 
-*Measurement status: these figures were measured on PostgreSQL 17, before `@boxoffice/platform` (metrics, JSON logging, trace context, graceful shutdown) existed and before `confirm` became all-or-nothing in a transaction (the load runs exercise holds, not confirm). They were repeated on the final code (PostgreSQL 18, instrumentation, ordered locks) for the hold runs only: see the section below. The other services' figures have not been repeated. Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
+*Measurement status: these figures were measured on PostgreSQL 17, before `@boxoffice/platform` (metrics, JSON logging, trace context, graceful shutdown) existed and before `confirm` became all-or-nothing in a transaction (the load runs exercise holds, not confirm). They were repeated on the final code (PostgreSQL 18, instrumentation, ordered locks) for the hold runs only: see the section below, and the A/B of request signing (ADR 002) in [benchmarks](../../docs/benchmarks.md#request-signing-measured-as-an-ab-on-the-same-machine). Overhead of the instrumentation alone: [operations.md](../../docs/operations.md#overhead).*
 
 Setup: MacBook Air M1, Node 26, NestJS 12 / Fastify 5, Postgres 17 in Docker (256 MB shared_buffers), pool 20, k6 with 50 VUs for 20 s, k6 and server on the same machine (so numbers are conservative). Script: `load/hold.js`, runner: `load/run.sh`.
 

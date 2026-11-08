@@ -1,6 +1,6 @@
 # payments: capacity
 
-*The measured figures quoted here come from the RESULTS.md of this service, taken before the metrics/logging of `@boxoffice/platform` existed and (where Postgres is involved) on PostgreSQL 17; they have not been re-measured. See the measurement status at the top of [RESULTS.md](RESULTS.md). Payments figures 561 and 904 are marked to-be-remeasured below.*
+*The measured figures quoted here come from the RESULTS.md of this service, taken before the metrics/logging of `@boxoffice/platform` existed and (where Postgres is involved) on PostgreSQL 17; the compensation path was re-measured on the final code (536 and 959 RPS on the M1 Air, 475 and 2 120 on the M4 Pro) and the CONFIRMED path with the ownership check on the M4 Pro. See the measurement status at the top of [RESULTS.md](RESULTS.md). Where a figure 561 or 904 appears below it is the older one.*
 
 ## Traffic
 - Flash sale: 20 000 seats sold in 60 s -> 20 000 / 60 = **~333 payments/s**; plan 400/s with retries.
