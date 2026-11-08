@@ -109,6 +109,12 @@ flush_redis_db() {
   fi
 }
 
+pg_query() { # one row, fields joined by |
+  if command -v psql >/dev/null; then psql -qAt -F '|' "$DATABASE_URL" -c "$1"; return; fi
+  local c=${PG_CONTAINER:-$(container_for_port 55432)}
+  docker exec "$c" psql -qAt -F '|' -U lab -d lab -c "$1"
+}
+
 pg_exec() {
   if command -v psql >/dev/null; then psql -q "$DATABASE_URL" -c "$1" >/dev/null; return; fi
   local c=${PG_CONTAINER:-$(container_for_port 55432)}
@@ -299,14 +305,17 @@ bench_payments() {
 }
 
 bench_payments_verify() {
-  table_begin "payments-verify (load/pay.js HELD=1, 100 VUs, 20 s, seats pre-held, CONFIRMED path, ownership check on and off; needs Redpanda)"
+  table_begin "payments-verify (load/pay.js HELD=1, 100 VUs, 20 s, seats pre-held, CONFIRMED path, ownership check on and off, interleaved; needs Redpanda)"
   local lat mode r prefix inv label
   for lat in 100 0; do
-    # Same work in both modes (seats held, CONFIRMED, one PSP call); only the signed POST /holds/verify to inventory differs.
-    for mode in 1 0; do
-      label="ownership check $([ "$mode" = 1 ] && echo on || echo off)"
-      prefix="$OUT/payments-verify$mode-psp$lat"; rm -f "$prefix".run*
-      for r in $(seq 1 "$RUNS"); do
+    for mode in 1 0; do rm -f "$OUT/payments-verify$mode-psp$lat".run*; done
+    # Same work in both modes (seats held, CONFIRMED, one PSP call); only the signed POST /holds/verify to inventory differs. The modes alternate
+    # run by run (on, off, on, off, ...), so a drift of the machine or of the database over the session hits both rows alike instead of
+    # making the later block look slower or faster (the first M4 Pro run did the modes in two blocks and gave "on" 25% faster than "off" at 100 ms).
+    for r in $(seq 1 "$RUNS"); do
+      for mode in 1 0; do
+        label="ownership check $([ "$mode" = 1 ] && echo on || echo off)"
+        prefix="$OUT/payments-verify$mode-psp$lat"
         truncate_payments
         start_service inventory 3101 SEED_SEATS=100000 PG_POOL=20 # re-seeds: all seats free again
         inv=$SVC_PID
@@ -316,10 +325,15 @@ bench_payments_verify() {
         check_load "payments-verify psp=${lat}ms $label run $r"
         echo "payments-verify psp=${lat}ms $label run $r/$RUNS" >&2
         HELD=1 k6_run "$prefix.run$r" "$ROOT/services/payments/load/pay.js"
+        # The run's end state, while it still exists (the next run truncates it): every payment must be CONFIRMED and sold seats must equal them.
+        echo "payments-verify psp=${lat}ms $label run $r: $(pg_query "SELECT (SELECT string_agg(status || '=' || n, ',') FROM (SELECT status, count(*) n FROM payments.payments GROUP BY 1) a), (SELECT count(*) FROM seats WHERE event_id=1 AND status='sold')")" | tee -a "$OUT/payments-verify-state.log" >&2
         stop_service "$SVC_PID"
         stop_service "$inv"
       done
-      emit "$(row "PSP latency $lat ms, $label" "$prefix")"
+    done
+    for mode in 1 0; do
+      label="ownership check $([ "$mode" = 1 ] && echo on || echo off)"
+      emit "$(row "PSP latency $lat ms, $label" "$OUT/payments-verify$mode-psp$lat")"
       cpu_emit "payments-verify$mode-psp$lat"
     done
   done

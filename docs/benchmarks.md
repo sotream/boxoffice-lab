@@ -231,7 +231,7 @@ Tests on the same checkout: `pnpm test` 616 passed in 45 s, `pnpm mutation:valid
 
 - **Inventory and waiting-room are 4% to 7% lower than on 2026-11-07**, in all five rows and in the same direction. Between the two runs the code gained request signing and verification on inventory (ADR 002) and a Redis command timeout in the waiting room; the A/B on the M1 measured signing at 3.6% on average, which is the same size. This run is not an A/B (different load, no unsigned control on this machine), so the difference is consistent with the signing cost and is not attributed to it. One run is an outlier: atomic-update low contention run 1 gave 7 164 RPS and p99 80.2 ms, while runs 2 and 3 gave 10 140 and 10 138. Its load before the run was 2.55, the lowest of all, and the cause was not found; the median ignores it.
 - **Payments on the compensation path barely moved** (475 against 475, 2 120 against 2 151, minus 1.4%), although the code gained signed payments requests (PR #20) between the two runs; the pre-charge check is off in this scenario. Signing a request costs microseconds, and a payment here costs milliseconds, so this is the size expected.
-- **payments-verify is a different piece of work, not a before-and-after pair.** The compensation path calls the PSP twice and refunds; the CONFIRMED path calls the PSP once and confirms the seats, and with the check on it first asks inventory (`POST /events/1/holds/verify`, signed). At PSP 100 ms the 100 VUs mostly wait for the PSP, and 1 068 against 475 RPS is the size that one PSP call instead of two would give; this is a reading, not a measurement of its own. The cost of the check itself is therefore **not isolated** by this data: that needs the same CONFIRMED path with `VERIFY_HOLDS=0` against `VERIFY_HOLDS=1`, which `scripts/bench.sh payments-verify` has run as separate rows since the run described here (it did not at the time); the figures are not recorded yet. What the data does show: with the check on and the seats held, the service sustains 2 672 RPS at p95 47.5 ms with a 0 ms PSP, so the check is not what limits it. After the last run (PSP 0 ms, run 3) the database held 44 559 payments, all CONFIRMED, and 44 559 sold seats, so the runs measured the path they claim to.
+- **payments-verify is a different piece of work, not a before-and-after pair.** The compensation path calls the PSP twice and refunds; the CONFIRMED path calls the PSP once and confirms the seats, and with the check on it first asks inventory (`POST /events/1/holds/verify`, signed). At PSP 100 ms the 100 VUs mostly wait for the PSP, and 1 068 against 475 RPS is the size that one PSP call instead of two would give; this is a reading, not a measurement of its own. The cost of the check itself is therefore **not isolated** by this data: that needs the same CONFIRMED path with `VERIFY_HOLDS=0` against `VERIFY_HOLDS=1`, which `scripts/bench.sh payments-verify` has run as separate rows since the run described here (it did not at the time); that measurement is in [the next section](#m4-pro-the-ownership-check-switched-on-and-off-and-a-second-ab-of-signing). What the data does show: with the check on and the seats held, the service sustains 2 672 RPS at p95 47.5 ms with a 0 ms PSP, so the check is not what limits it. After the last run (PSP 0 ms, run 3) the database held 44 559 payments, all CONFIRMED, and 44 559 sold seats, so the runs measured the path they claim to.
 - **The gateway hop costs 22% of the throughput on the M4 Pro** (8 918 to 6 927 RPS, p95 7.8 to 10.4 ms), against 23% on the M1 Air (3 898 to 2 984). The relative cost is the same on a machine about 2.3 times faster; the absolute added latency is smaller (2.6 ms against 6 ms at p95).
 
 | Notifications partitions | seconds | deliveries/s | sent / expected | duplicate rows | dead letters | provider calls |
@@ -261,4 +261,41 @@ The machine was not saturated here either: k6 and node stayed below 300% in ever
 
 ### A/B of inventory request signing on a second machine
 
-`scripts/ab-signing.sh [runs]` repeats the unsigned, signed, unsigned-again comparison of the M1 section above on any machine: it builds the commit before ADR 002 (`b51732a`) and the one with it (`5875217`) in throwaway worktrees and runs `BENCH_CPU=1 scripts/bench.sh inventory` from each, in the order A, B, A2. The difference between A and A2 (same code) is the noise of the machine; a signing cost smaller than that cannot be claimed. No M4 Pro figures are recorded yet.
+`scripts/ab-signing.sh [runs]` repeats the unsigned, signed, unsigned-again comparison of the M1 section above on any machine: it builds the commit before ADR 002 (`b51732a`) and the one with it (`5875217`) in throwaway worktrees and runs `BENCH_CPU=1 scripts/bench.sh inventory` from each, in the order A, B, A2. The difference between A and A2 (same code) is the noise of the machine; a signing cost smaller than that cannot be claimed. The M4 Pro result is in [the next section](#m4-pro-the-ownership-check-switched-on-and-off-and-a-second-ab-of-signing).
+
+## M4 Pro: the ownership check switched on and off, and a second A/B of signing
+
+2026-11-08, 13:22 to 15:40 CET, commit `42d192d`, MacBook Pro M4 Pro on AC power, Docker Desktop (Apple Virtualization, 12 CPUs, 8.3 GB), `BENCH_CPU=1`, 5 runs per row. The machine was not quiet: the 1-minute load before most runs was 3.5 to 5.6 (7.0 and 7.2 at the start of the signed and the second unsigned side of the A/B), after the 10 to 60 s wait of `BENCH_MAX_LOAD`; the cause was not identified (a container of another project exited during the run, so the load was not that). No failed request or check in any of the 16 rows.
+
+### The check on and off
+
+Same work in both rows: seats held in SQL beforehand, every payment ends CONFIRMED with one PSP call; only the signed `POST /events/1/holds/verify` to inventory differs (`VERIFY_HOLDS=1` against `0`). The modes ran as two blocks (all "on" runs, then all "off" runs) at each PSP latency.
+
+| Row | RPS median (min-max) | p95 ms median (min-max) | p99 ms |
+|---|---|---|---|
+| PSP 100 ms, check on | 1 060 (1 012-1 122) | 131.7 (110.3-136.7) | 138.3 |
+| PSP 100 ms, check off | 845 (831-857) | 147.5 (146.3-150.3) | 155.5 |
+| PSP 0 ms, check on | 2 664 (2 332-2 693) | 47.8 (46.5-56.6) | 53.0 |
+| PSP 0 ms, check off | 3 012 (2 850-3 045) | 41.8 (41.7-46.7) | 46.1 |
+
+Node mean CPU (percent of one core): 63 on and 42 off at 100 ms, 116 on and 93 off at 0 ms; k6 14 and 8, 29 and 32; the Docker VM 178 and 124, 377 and 383.
+
+- **At PSP 0 ms the check costs 11.6% of the throughput** (3 012 to 2 664 RPS) and 6 ms at p95 (41.8 to 47.8), with RPS ranges that do not overlap. Node uses about 25 points of a core more with the check on, in line with one more signed HTTP round trip per payment.
+- **At PSP 100 ms the sign is the wrong way round**: "on" is 25% faster than "off" (1 060 against 845 RPS) with ranges that do not overlap. The code cannot explain that: with `VERIFY_HOLDS=0` the service only skips the call (`payments.service.ts`), so "off" does strictly less work. The "on" figure agrees with the earlier M4 Pro run (1 068); it is the "off" row that is low. The two modes ran in separate blocks, so a drift of the machine or the database between the blocks is a confound this run cannot remove. Candidates not tested: each run re-seeds 100 000 seats (a `DELETE` and an insert), so dead tuples accumulate across the session and autovacuum may lag; and the load of the machine. **The 100 ms row therefore says nothing about the cost of the check, and the 0 ms figure shares the same confound**, which is why the 11.6% is an upper-looking estimate at best, not a measurement of the check alone. `bench.sh payments-verify` now alternates the modes run by run (on, off, on, off) and logs the end state of every run to `payments-verify-state.log`; the figures above predate that change and are not repeated.
+- **Correctness**: the state was read for the last run only (PSP 0, check off): 50 633 payments, all CONFIRMED, 50 633 sold seats. The other three rows were not read; the changed script now records it for every run.
+
+### A second A/B of inventory signing
+
+`scripts/ab-signing.sh 5`: A is `b51732a` (unsigned), B is `5875217` (signed), A2 is `b51732a` again.
+
+| Row | A RPS | B RPS | A2 RPS | A2 against A | B against the mean of A and A2 |
+|---|---|---|---|---|---|
+| atomic-update, low contention | 10 511 | 10 165 | 9 877 | -6.0% | -0.3% |
+| atomic-update, hot (20 seats) | 12 033 | 11 573 | 11 523 | -4.2% | -1.7% |
+| for-update, low contention | 10 425 | 9 790 | 10 442 | +0.2% | -6.2% |
+| for-update, hot (20 seats) | 12 626 | 12 671 | 13 459 | +6.6% | -2.8% |
+
+p95 ms (A, B, A2): 6.1, 6.4, 6.5; 5.0, 5.4, 5.4; 6.6, 7.0, 6.5; 5.0, 5.0, 4.5. Medians of 5 runs, load before the runs 3.6 to 5.6.
+
+- **The throughput cost of signing cannot be told from the noise.** The two unsigned sides differ by 4% to 7% in three rows, in different directions (down in the atomic rows, up in for-update hot), which is the noise of the machine; the signed side sits 0.3% to 2.8% below the mean of the two in three rows, inside that spread. One row (for-update, low contention) has B 6.2% below while A and A2 agree within 0.2%, and its B range (8 759 to 9 894) does not overlap A2 (10 385 to 10 491); one row of four is not a result. The M1 A/B (3.6% on average) is neither confirmed nor refuted by this one.
+- **The CPU is a more consistent signal than the throughput.** The signed side used more Node CPU in all four rows: mean 68, 71, 67 and 70 against 58 to 61 on the two unsigned sides (+12% to +20% of the node's CPU), and more k6 CPU in three of four (90, 96, 86, 103 against 82 to 97; k6 signs on its side). Throughput did not drop by that much, which is what a limit elsewhere would look like: the Docker VM held at 312 to 406% of a core, and nothing in this data shows the Node process at a core limit (peak 79 to 97). That is a reading, not a test: the CPU difference includes the HMAC (2.4 and 3.2 microseconds per request, measured on the M1) and the reading of the body into memory, which were not separated.
