@@ -37,7 +37,7 @@ const svc = new GatewayService(
   new RateLimiter(redis, cfg.userRate, cfg.userBurst),
   async (url, init) => {
     const res = await fetch(url, { ...init, signal: AbortSignal.timeout(cfg.upstreamTimeoutMs) });
-    return { status: res.status, body: await res.text() };
+    return { status: res.status, body: await res.text(), retryAfter: res.headers.get("retry-after") };
   }
 );
 

@@ -3,7 +3,7 @@ import { NestFactory } from "@nestjs/core";
 import { FastifyAdapter, NestFastifyApplication } from "@nestjs/platform-fastify";
 import Redis from "ioredis";
 import { createShutdown, drainHttp, initService, loadConfigOrExit, Readiness, redisCheck, shutdownEnv, startLoop, wireNest } from "@boxoffice/platform";
-import { AppModule } from "./app.module";
+import { AppModule, DEFAULT_REDIS_COMMAND_TIMEOUT_MS } from "./app.module";
 import { admissionErrors, registerQueueLengthGauge } from "./metrics";
 import { QueueService, REDIS } from "./queue.service";
 
@@ -15,11 +15,20 @@ async function bootstrap() {
   const cfg = loadConfigOrExit((e) => {
     e.secret("ADMISSION_SECRET", "dev-secret"); // validated here; queue.controller reads it (and ADMIT_PER_SECOND, for the ETA) at import
     e.url("REDIS_URL", "redis://localhost:56379", ["redis:", "rediss:"]);
+    e.int("REDIS_COMMAND_TIMEOUT_MS", DEFAULT_REDIS_COMMAND_TIMEOUT_MS, { min: 50, max: 7000 }); // validated here, so a bad value exits 78; app.module builds the client with it
     return { port: e.port("PORT", 3102), admitPerSecond: e.int("ADMIT_PER_SECOND", 500, { min: 1 }), shutdown: shutdownEnv(e) };
   });
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter(), { logger: ["error"] });
   const q = app.get(QueueService);
   const redis = app.get<Redis>(REDIS);
+  // The admission tick has its own client WITHOUT a command timeout, on purpose. ZPOPMIN and the SETs that follow it are two steps: a ZPOPMIN that timed
+  // out on the client may still be executed by Redis when the path heals, and its answer would be thrown away, so the users it popped would be in no queue
+  // and have no admission key (they would see "unknown" and re-join at the back). Waiting for the answer keeps the pair consistent: during a silent partition
+  // the tick simply stalls on its one in-flight command (never more than one, so nothing piles up) and carries on at the heal. Request paths and readiness
+  // use the client with the deadline (app.module).
+  const tickRedis = new Redis(process.env.REDIS_URL ?? "redis://localhost:56379");
+  tickRedis.on("error", () => undefined); // the tick reports failures through onError
+  const tickQueue = new QueueService(tickRedis);
   registerQueueLengthGauge(q, ADMISSION_EVENT_ID);
   const readiness = new Readiness([redisCheck(redis)], { cacheMs: 1000 });
   wireNest(app, readiness);
@@ -27,14 +36,14 @@ async function bootstrap() {
   // Admission tick: every 100 ms release a tenth of the per-second budget.
   const tick = startLoop({
     name: "admission", intervalMs: 100,
-    fn: () => q.admit(ADMISSION_EVENT_ID, Math.max(1, Math.round(cfg.admitPerSecond / 10))).then(() => undefined),
+    fn: () => tickQueue.admit(ADMISSION_EVENT_ID, Math.max(1, Math.round(cfg.admitPerSecond / 10))).then(() => undefined),
     onError: () => admissionErrors.inc()
   });
 
   const shutdown = createShutdown({ ...cfg.shutdown, readiness });
   shutdown.add("http server (stop accepting, drain in-flight)", () => drainHttp(app.getHttpServer(), () => app.close()));
   shutdown.add("admission tick", () => tick.stop());
-  shutdown.add("redis", async () => { await redis.quit().catch(() => redis.disconnect()); });
+  shutdown.add("redis", async () => { await Promise.all([redis, tickRedis].map((r) => r.quit().catch(() => r.disconnect()))); });
   shutdown.install();
 
   await app.listen({ port: cfg.port, host: "0.0.0.0", backlog: 4096 });
