@@ -206,3 +206,53 @@ The hop costs about 23% of the throughput (19% in the first measurement, 2 485 t
 
 Within 4% of the first measurement on Postgres 17 (provider latency 20 ms and concurrency 25, which the first record did not state, so the default of `load/bench.js` was assumed). The consumer is bound by `concurrency x partitions / (provider latency + database time)`, so it moves little with the machine; the Docker VM averaged 165% to 184% of a core and Node 10% to 17% while it ran.
 
+
+## Final code on the M4 Pro: all scenarios, and payments with the ownership check on
+
+2026-11-08, 09:44 to 12:19 CET, commit `0c1c3c5`, MacBook Pro M4 Pro (8 performance and 4 efficiency cores), AC power at 100%, Docker Desktop on the Apple Virtualization framework with 12 CPUs and 8.3 GB (the Rosetta setting and the Resources limits were not read), `BENCH_CPU=1 scripts/bench.sh <scenario> 3` for every scenario, one after another, 3 runs each, 0 failed checks and 0 breached thresholds in every row. The 1-minute load average was 2.5 to 3 before the runs started, but many runs began after the 10 to 60 s wait of `BENCH_MAX_LOAD` with a load of 3 to 5: inventory 3 of 12 runs above 4, catalog 12 of 18 (peak 16.5 before `fts ranked + Redis cache` run 1, source not identified), gateway 6 of 6 (peak 7.7), waiting-room 1 of 3, notifications 1 of 6, payments and payments-verify none. The container of another project was running throughout. The machine was therefore not quiet, and the figures are comparable with each other and with the 2026-11-07 M4 Pro run only loosely.
+
+Tests on the same checkout: `pnpm test` 616 passed in 45 s, `pnpm mutation:validate` ok (82 mutations), `pnpm test:e2e:faults` 17 passed in 451 s (F1 to F14), `pnpm test:e2e` 11 of 12 passed (see the end of this section).
+
+| Row | RPS median (min-max) | p95 ms | p99 ms | 2026-11-07 RPS (commit `90b6a5a`) |
+|---|---|---|---|---|
+| inventory, atomic-update, low contention | 10 138 (7 164-10 140) | 6.4 | 7.6 | 10 679 |
+| inventory, atomic-update, hot (20 seats) | 11 528 (11 508-11 533) | 5.4 | 6.6 | 12 095 |
+| inventory, for-update, low contention | 10 049 (10 037-10 077) | 6.8 | 8.0 | 10 603 |
+| inventory, for-update, hot (20 seats) | 12 912 (12 867-12 967) | 4.8 | 5.8 | 13 492 |
+| waiting-room, join + 2 status polls | 36 582 (36 476-36 740) | 4.0 | 4.6 | 39 231 |
+| payments, PSP 100 ms (compensation, `VERIFY_HOLDS=0`) | 475 (468-482) | 276.5 | 283.6 | 475 |
+| payments, PSP 0 ms (compensation, `VERIFY_HOLDS=0`) | 2 120 (2 116-2 124) | 69.2 | 75.9 | 2 151 |
+| **payments-verify**, PSP 100 ms (check on, CONFIRMED) | 1 068 (1 064-1 076) | 132.0 | 137.1 | not measured before |
+| **payments-verify**, PSP 0 ms (check on, CONFIRMED) | 2 672 (2 532-2 681) | 47.5 | 53.2 | not measured before |
+| gateway, direct to inventory | 8 918 (8 918-9 036) | 7.8 | 10.3 | not measured on this machine |
+| gateway, through the gateway | 6 927 (6 800-7 508) | 10.4 | 12.7 | not measured on this machine |
+
+- **Inventory and waiting-room are 4% to 7% lower than on 2026-11-07**, in all five rows and in the same direction. Between the two runs the code gained request signing and verification on inventory (ADR 002) and a Redis command timeout in the waiting room; the A/B on the M1 measured signing at 3.6% on average, which is the same size. This run is not an A/B (different load, no unsigned control on this machine), so the difference is consistent with the signing cost and is not attributed to it. One run is an outlier: atomic-update low contention run 1 gave 7 164 RPS and p99 80.2 ms, while runs 2 and 3 gave 10 140 and 10 138. Its load before the run was 2.55, the lowest of all, and the cause was not found; the median ignores it.
+- **Payments on the compensation path barely moved** (475 against 475, 2 120 against 2 151, minus 1.4%), although the code gained signed payments requests (PR #20) between the two runs; the pre-charge check is off in this scenario. Signing a request costs microseconds, and a payment here costs milliseconds, so this is the size expected.
+- **payments-verify is a different piece of work, not a before-and-after pair.** The compensation path calls the PSP twice and refunds; the CONFIRMED path calls the PSP once and confirms the seats, and with the check on it first asks inventory (`POST /events/1/holds/verify`, signed). At PSP 100 ms the 100 VUs mostly wait for the PSP, and 1 068 against 475 RPS is the size that one PSP call instead of two would give; this is a reading, not a measurement of its own. The cost of the check itself is therefore **not isolated** by this data: that would need the same CONFIRMED path with `VERIFY_HOLDS=0` against `VERIFY_HOLDS=1`, which `bench.sh` does not run. What the data does show: with the check on and the seats held, the service sustains 2 672 RPS at p95 47.5 ms with a 0 ms PSP, so the check is not what limits it. After the last run (PSP 0 ms, run 3) the database held 44 559 payments, all CONFIRMED, and 44 559 sold seats, so the runs measured the path they claim to.
+- **The gateway hop costs 22% of the throughput on the M4 Pro** (8 918 to 6 927 RPS, p95 7.8 to 10.4 ms), against 23% on the M1 Air (3 898 to 2 984). The relative cost is the same on a machine about 2.3 times faster; the absolute added latency is smaller (2.6 ms against 6 ms at p95).
+
+| Notifications partitions | seconds | deliveries/s | sent / expected | duplicate rows | dead letters | provider calls |
+|---|---|---|---|---|---|---|
+| 1 | 82.4 (81.9-82.8) | 461 (459-464) | 38 000 / 38 000 | 0 | 10 | 38 180 |
+| 3 | 26.8 (26.7-26.8) | 1 421 (1 420-1 421) | 38 000 / 38 000 | 0 | 10 | 38 180 |
+
+The same as on the M1 Air within 2.4% (466 and 1 388 there), and 38 000 is 20 000 unique events times their channels (90% on two, 10% on one), which the table header's "20 000 unique events" does not say. The consumer is bound by the 20 ms provider call and the concurrency of 25, not by the machine.
+
+**Catalog** (medians of 3): ilike 14 179 RPS, fts-date 15 711, fts ranked 2 611, fts ranked with the Redis cache 39 070, rare term with ilike 65 (p95 1 011 ms), rare term with fts-date 28 476. `fts ranked` run 3 had 30 failed requests of 35 923 (0.08%, no failed checks) and 2 070 RPS against about 2 610 in the other two runs; the k6 output has no error text, so the type of the failure is unknown. The machine load before that run was above 4.
+
+Mean CPU (percent of one core, peak in brackets; the VM scale goes to 1 200). The VM holds Postgres, Redis and Redpanda.
+
+| Scenario | VM | k6 | node |
+|---|---|---|---|
+| inventory (4 rows) | 320 to 444 mean, 435 to 1 068 peak | 84 to 104 (118 to 141) | 68 to 72 (92 to 98) |
+| waiting-room | 127 (183) | 181 (239) | 79 (107) |
+| payments PSP 100 / 0 ms | 91 (126) / 309 (464) | 7 (11) / 21 (35) | 38 (49) / 95 (124) |
+| payments-verify PSP 100 / 0 ms | 175 (242) / 386 (502) | 13 (19) / 30 (40) | 60 (122) / 120 (161) |
+| gateway direct / through the gateway | 586 (836) / 510 (733) | 59 (92) / 57 (80) | 54 (74) / 128 (183) |
+| catalog (6 rows) | 110 to 879 mean, 168 to 1 181 peak | 2 to 209 | 3 to 79 |
+| notifications 1 / 3 partitions | 64 (94) / 99 (140) | not k6 | 8 (14) / 13 (25) |
+
+The machine was not saturated here either: k6 and node stayed below 300% in every scenario, the VM peaked at 1 181 of 1 200 only in `catalog rare term: ilike` (a sequential scan, k6 at 2% and node at 3% mean) and was above 1 000 in one inventory row. The node process of the payments service averages 95% of one core at a 0 ms PSP on the compensation path and 120% on the CONFIRMED path with the check, which is the one process that gets close to a core limit.
+
+**End-to-end suite, one failure, not reproduced.** `pnpm test:e2e` failed `overload.e2e.test.ts > scenario 3` once on the M4 Pro with `TypeError: fetch failed`, `Caused by: Error: connect ECONNRESET 127.0.0.1:55776`; the 11 other tests passed and the run was not repeated there. The same test passed in 9 of 9 runs on the M1 Air afterwards. The error is a refused connect, not an HTTP answer, and the test fires 300 simultaneous connections at the gateway (plus a storm of 1 000 holds) on a system whose `kern.ipc.somaxconn` is 128; that is a hypothesis, not a finding, and the cause is open. The fault suite (`pnpm test:e2e:faults`, F1 to F14) ran green in 451 s on the same machine.
