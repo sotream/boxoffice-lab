@@ -11,6 +11,14 @@ These figures predate the final code; `scripts/bench.sh notifications` now repro
 | 1 | 85.1 s | 447 |
 | 3 | 27.3 s | 1 393 |
 
+### Re-measured on the final code (2026-11-08, M1 Air, PostgreSQL 18, 3 runs, a noisier machine)
+| Partitions consumed at once | Time | Deliveries/s |
+|---|---|---|
+| 1 | 81.6 s (81.5-81.6) | 466 |
+| 3 | 27.4 s (27.4-27.4) | 1 388 (1 387-1 389) |
+
+Integrity in every run: 38 000 of 38 000 sent, 0 duplicate `(event, channel)` rows, 10 dead letters, 38 180 provider calls. Within 4% of the first record. Details: [benchmarks](../../docs/benchmarks.md#final-code-on-the-m1-air-request-signing-the-ownership-check-gateway-and-notifications).
+
 ## Integrity (identical in both runs)
 - Deliveries sent: 38 000 of 38 000 expected. Duplicate `(event, channel)` rows: 0.
 - Provider calls: 38 180 = 38 000 + 90 flaky events x 2 retries. Duplicate deliveries cost no extra provider calls.

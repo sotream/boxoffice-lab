@@ -151,3 +151,58 @@ What this shows, and what it does not:
 - **On the M4 Pro the machine is not saturated.** The three sampled processes together average about 5.4 cores of the 12 in the inventory runs and about 4 in waiting-room. Neither the Node service (60% to 90% of one core) nor k6 is at a core limit, so "the test is CPU-bound" does not hold for the M4 Pro in the sense of all cores being busy. The largest consumer in the inventory and payments rows is the Docker VM (3 to 5.5 cores), i.e. Postgres plus the VM's network and disk path; in waiting-room, which touches only Redis, it is k6 (about 2 cores). The single Node process uses one core by design, so a service that is not CPU-limited at 60% to 90% of a core is waiting on something: the round trip to Postgres or Redis through the VM. That is a hypothesis consistent with the numbers; it was not tested (for example by running Postgres natively or with more service instances).
 - **Payments is dominated by the PSP latency, then by the VM.** With a 100 ms PSP the 100 VUs are mostly waiting (k6 at 6%, node at 36% of a core) and throughput is about VUs divided by latency; with a 0 ms PSP the throughput is 4.5 times higher on the M4 Pro (2 151 against 475) and 1.8 times higher on the M1 (959 against 536). M4 Pro over M1 is 2.2x without PSP latency (2 151 against 959) and 0.9x with it (475 against 536): the 100 ms row is limited by the latency, not by the machine, and the M4 Pro's p95 there (273 ms) is not better than the M1's (250 ms). With three runs each and a 100 ms floor, this row does not rank the machines.
 - **Runner and M1 still have no CPU split for the inventory rows**, so "cores versus per-core speed" remains open; the M1 payments sample (VM at 341% mean of 8 CPUs, node at 83%) points the same way as the M4 Pro.
+
+## Final code on the M1 Air: request signing, the ownership check, gateway and notifications
+
+2026-11-08, 01:49 to 02:34 CET, commit `e57f0bf` (after inventory ADR 002 and payments ADR 007), MacBook Air M1 on AC power, Docker Desktop 8 CPUs and 8.3 GB, Postgres 18, `BENCH_CPU=1`, `scripts/bench.sh inventory 5`, `payments 3`, `gateway 3`, `notifications 3` run one after another by a script that waited for AC power and a 1-minute load below 3 for five minutes. 0 failed requests and 0 breached thresholds everywhere; notifications integrity 38 000 of 38 000, 0 duplicate rows, 10 dead letters, 38 180 provider calls in all runs.
+
+**The machine was not idle.** The containers of two other projects (`evcharge-*`, `normkompass-db`) were running, and the 1-minute load logged before the runs was 3.3 to 5.5 for inventory (8 of 20 runs started above 4 after the 60 s wait), up to 4.4 for payments and gateway and up to 4.8 for notifications. Read the rows below as one more noisy sample, not as a controlled comparison.
+
+| Row (median RPS, min-max) | Quiet M1, before signing (earlier section) | Now |
+|---|---|---|
+| inventory atomic, low (100 000 seats) | 3 624 | 3 323 (3 280-3 357) |
+| inventory atomic, hot (20 seats) | 4 207 | 4 032 (3 442-4 128) |
+| inventory for-update, low | 3 759 | 3 179 (2 918-3 284) |
+| inventory for-update, hot | 5 214 | 4 871 (4 817-4 954) |
+| payments, PSP 100 ms | 536 (520-536) | 521 (519-525) |
+| payments, PSP 0 ms | 959 (950-960) | 912 (879-928) |
+
+The k6 scripts now sign every request (`k6/crypto`) and inventory and payments verify it, so these rows include the signing cost on both sides. Every row is 3% to 15% lower than the earlier quiet sample. That comparison is weak, because the earlier sample was taken on a different day with its own load (3.8 to 16.2 before the runs) and a spread of up to 2x between runs on this machine in the first M1 section, so the next subsection measures the effect of signing directly.
+
+### Request signing, measured as an A/B on the same machine
+
+Three runs of `scripts/bench.sh inventory 5` back to back (02:43 to 03:57 CET, same machine, same session, AC power, the other projects' containers still running): **A** is the tree before inventory authentication (`b51732a`, the parent of PR #28), **B** is the tree of PR #28 itself (`5875217`: signed requests, nothing else changed; the later pool and waiting-room changes are not in it), **A2** is the unsigned tree again, to show the drift of the machine. Median RPS (min-max), p95 in ms:
+
+| Row | A (unsigned) | B (signed) | A2 (unsigned again) | B against the mean of A and A2 |
+|---|---|---|---|---|
+| atomic-update, low (100 000 seats) | 3 468 (3 206-3 570), p95 20.5 | 3 458 (3 344-3 496), p95 23.6 | 3 479 (3 387-3 501), p95 24.8 | -0.4% |
+| atomic-update, hot (20 seats) | 4 198 (4 043-4 262), p95 17.1 | 4 083 (3 977-4 172), p95 20.2 | 4 305 (4 210-4 347), p95 18.6 | -3.9% |
+| for-update, low | 3 459 (3 210-3 470), p95 21.4 | 3 221 (3 103-3 308), p95 25.4 | 3 442 (3 204-3 480), p95 22.3 | -6.7% |
+| for-update, hot | 5 057 (4 875-5 113), p95 14.0 | 4 890 (4 806-4 929), p95 16.1 | 5 066 (4 978-5 098), p95 14.0 | -3.4% |
+
+The two unsigned runs differ from each other by at most 2.5% per row, so the drift of the machine over the 75 minutes was small; the signed run is 0.4% to 6.7% lower (3.6% on average over the four rows), clearly outside that drift in three rows and inside it in the first. Load before the runs was up to 4.9 (A, 4 of 20 runs above 4), 5.1 (B, 9 of 20) and 4.7 (A2, 7 of 20); B did start under slightly more load, which may account for part of its gap. The p95 of the signed run is 1 to 4 ms higher. Reading: signing and verifying cost inventory a small but measurable share of its throughput, **about 0% to 7%, 3.6% on average** here, which is more than the HMAC alone (below) and consistent with the extra work the verifying hook does (it reads the whole body into memory and hands it to the parser as a new stream) plus the signing work k6 does for every request. The split between these was not measured.
+
+What was measured directly for the HMAC: a Node microbenchmark of `signInternalRequest` / `verifyInternalRequest` with a 45-byte body (300 000 calls after a warm-up, on a busy machine) gave 2.4 microseconds to sign and 3.2 to verify. Inventory spends about 170 microseconds of CPU per request at these rates (56% of a core at 3 300 RPS) and only verifies, so the HMAC is about 2% of that; the rest of the 3.6% is the body handling and the caller's side of the signing.
+
+**Payments with the ownership check on is not in this table**: `bench.sh` starts payments with `VERIFY_HOLDS=0` because `load/pay.js` pays for seats nobody holds (see payments ADR 007), so the extra inventory round trip per payment was not measured.
+
+### Gateway hop
+
+The first run of the new `gateway` scenario seeded inventory with 100 000 seats like the other scenarios and gave 380 RPS direct and 363 through the gateway (p95 189 and 199 ms), against 2 485 and 2 001 in the first measurement. That was an error of the scenario, not a regression: `GET availability` counts the seats of the event on every request, so with 100 000 seats each request scans 100 000 rows and the run measures that scan (the Docker VM sat at 568% of a core). The scenario now seeds 5 000 seats (`GATEWAY_BENCH_SEATS`), the size of `flash-sale.js`; the first measurement does not state its seat count, so the comparison below is approximate.
+
+| Path | RPS median (min-max) | p95 ms | p99 ms | Node mean CPU % |
+|---|---|---|---|---|
+| direct to inventory | 3 898 (1 955-3 953) | 21.4 | 31.6 | 48 |
+| through gateway (IP limiter + proxy) | 2 984 (2 866-3 039) | 27.5 | 41.4 | 78 |
+
+The hop costs about 23% of the throughput (19% in the first measurement, 2 485 to 2 001) and about 6 ms at p95. The direct row contains one run at 1 955 RPS (the other two are within 1.5% of each other); the median ignores it. Both rows ran with a load of 3.7 to 4.1 before the run.
+
+### Notifications
+
+| Partitions consumed at once | Seconds median (min-max) | Deliveries/s median (min-max) | First measurement |
+|---|---|---|---|
+| 1 | 81.6 (81.5-81.6) | 466 (466-466) | 447 |
+| 3 | 27.4 (27.4-27.4) | 1 388 (1 387-1 389) | 1 393 |
+
+Within 4% of the first measurement on Postgres 17 (provider latency 20 ms and concurrency 25, which the first record did not state, so the default of `load/bench.js` was assumed). The consumer is bound by `concurrency x partitions / (provider latency + database time)`, so it moves little with the machine; the Docker VM averaged 165% to 184% of a core and Node 10% to 17% while it ran.
+
