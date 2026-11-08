@@ -5,6 +5,8 @@
 Setup: MacBook Air M1, Node 26, gateway on plain Fastify 5 in front of inventory (NestJS 12 / Fastify 5), all services, Postgres and Redis on one machine, k6 on the same machine.
 
 ## Overhead of the hop (`load/overhead.js`, 50 VUs, 15 s, GET availability)
+These figures predate the final code (signed requests to inventory, `@boxoffice/platform`); `scripts/bench.sh gateway` now reproduces both rows with repeated runs ([benchmarks.md](../../docs/benchmarks.md#method)).
+
 | Path | RPS | p50 ms | p95 ms | p99 ms |
 |---|---|---|---|---|
 | direct to inventory | 2 485 | 18.6 | 30.9 | 43.0 |

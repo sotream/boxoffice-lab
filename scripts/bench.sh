@@ -3,11 +3,11 @@
 # prints a Markdown table of median, min and max per scenario row.
 #
 # Usage: scripts/bench.sh <scenario> [runs=3]
-#   scenario: inventory | waiting-room | payments | catalog | all
-# Needs: docker compose up -d (Postgres, Redis; Redpanda for payments), pnpm build, k6, node, curl.
+#   scenario: inventory | waiting-room | payments | catalog | gateway | notifications | all
+# Needs: docker compose up -d (Postgres, Redis; Redpanda for payments and notifications), pnpm build, k6 (not for notifications), node, curl.
 # Env:
 #   BENCH_OUT        output directory for raw k6 summaries and table.md (default ./bench-out, gitignored)
-#   BENCH_REDIS_DB   Redis logical database used by waiting-room and catalog (default 12); flushed before each run
+#   BENCH_REDIS_DB   Redis logical database used by waiting-room, catalog and gateway (default 12); flushed before each run
 #   REDIS_CONTAINER, PG_CONTAINER  containers used to flush Redis and truncate payments tables. Default: the
 #                    container publishing port 56379 / 55432 (works for compose and for CI service containers).
 #   DATABASE_URL     used with psql for the payments cleanup if psql exists (default postgres://lab:lab@localhost:55432/lab)
@@ -19,13 +19,26 @@
 #   BENCH_CPU_INTERVAL  seconds between CPU samples (default 5)
 #   INVENTORY_INTERNAL_TOKEN, PAYMENTS_INTERNAL_TOKEN  request-signing keys; inherited by the started services and by k6 (hold.js and pay.js sign),
 #                    so unset (the development defaults on both sides) works and a custom value only has to be exported once
+#   N, SENDER_LATENCY_MS, CONCURRENCY  passed through to services/notifications/load/bench.js (its defaults: 20000 events, 20 ms, 25)
+# gateway: rows "direct to inventory" (BASE=inventory :3101) and "through gateway" (BASE=gateway :3100) of load/overhead.js, GET
+#   availability only, so waiting-room is not started. The gateway runs with IP_RATE=100000 IP_BURST=100000 (as the e2e Stack does): the
+#   per-IP limiter is effectively off, so it does not cap the measurement (a 429 would show up as a failed request in the table). The limiter
+#   itself is still in the path (one Redis round trip per request), only its limit is out of reach. Both sides use the same signing key
+#   (INVENTORY_INTERNAL_TOKEN): overhead.js signs the direct request, the gateway signs its own forwarded request. The gateway's /readyz is on
+#   its ops port (3106), which is where the readiness wait looks.
+# notifications: load/bench.js is a single node process (producer, consumer and checks in one), not a k6 script and not a started service:
+#   it creates a fresh 3-partition topic, produces 21 010 events (1 000 duplicates, 10 poison), consumes them with PARTS=1 and PARTS=3
+#   partitions at once, and prints one JSON line with the integrity checks. Rows: one per PARTS value; the table shows time, deliveries/s,
+#   sent vs expected, duplicate rows, dead letters (10 expected) and provider calls. bench.js empties notifications.deliveries before each run
+#   and deletes its topics when it ends; bench.sh truncates the table again and removes leftover bench topics/groups on exit, so nothing of a
+#   run is left in Postgres or Redpanda. Needs Postgres and Redpanda (59092); nothing else listens, so ports are not an issue.
 # Nothing in the k6 scripts is changed; services are started from dist/ and are always killed on exit.
 set -euo pipefail
 
 SCENARIO=${1:-}
 RUNS=${2:-3}
-case "$SCENARIO" in inventory | waiting-room | payments | catalog | all) ;; *)
-  echo "usage: $0 <inventory|waiting-room|payments|catalog|all> [runs=3]" >&2; exit 2 ;; esac
+case "$SCENARIO" in inventory | waiting-room | payments | catalog | gateway | notifications | all) ;; *)
+  echo "usage: $0 <inventory|waiting-room|payments|catalog|gateway|notifications|all> [runs=3]" >&2; exit 2 ;; esac
 [[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "runs must be a positive integer" >&2; exit 2; }
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -36,18 +49,20 @@ REDIS_DB=${BENCH_REDIS_DB:-12}
 DATABASE_URL=${DATABASE_URL:-postgres://lab:lab@localhost:55432/lab}
 PIDS=()
 CPU_PID=
+NOTIF_DIRTY=0
 cleanup() {
   local p
   [ -n "$CPU_PID" ] && kill "$CPU_PID" 2>/dev/null || true
   [ -n "$CPU_PID" ] && wait "$CPU_PID" 2>/dev/null || true
   for p in ${PIDS[@]+"${PIDS[@]}"}; do kill "$p" 2>/dev/null || true; done
   for p in ${PIDS[@]+"${PIDS[@]}"}; do wait "$p" 2>/dev/null || true; done
+  if [ "$NOTIF_DIRTY" = 1 ]; then notifications_cleanup || true; fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
 
-command -v k6 >/dev/null || { echo "k6 not found" >&2; exit 1; }
+[ "$SCENARIO" = notifications ] || command -v k6 >/dev/null || { echo "k6 not found" >&2; exit 1; }
 : >"$OUT/table.md"
 
 # --- helpers -----------------------------------------------------------------------------------------------------
@@ -55,6 +70,7 @@ command -v k6 >/dev/null || { echo "k6 not found" >&2; exit 1; }
 container_for_port() { docker ps --filter "publish=$1" --format '{{.Names}}' 2>/dev/null | head -n1 || true; }
 
 # start_service <package> <port> [VAR=value ...]: sets SVC_PID. Refuses to run when the port is already served.
+# PROBE_PORT=<port> start_service ...: poll /readyz there instead (the gateway serves it only on its ops port).
 start_service() {
   local pkg=$1 port=$2; shift 2
   if curl -s -o /dev/null "localhost:$port/healthz"; then
@@ -66,7 +82,7 @@ start_service() {
   # Seeding and migrating take a few seconds: wait for readiness instead of a fixed sleep.
   local i
   for i in $(seq 1 240); do
-    curl -sf "localhost:$port/readyz" >/dev/null 2>&1 && return 0
+    curl -sf "localhost:${PROBE_PORT:-$port}/readyz" >/dev/null 2>&1 && return 0
     kill -0 "$SVC_PID" 2>/dev/null || { echo "$pkg exited during start:" >&2; tail -n 20 "$WORK/$pkg.log" >&2; exit 1; }
     sleep 0.5
   done
@@ -183,13 +199,13 @@ JS
 HEADER="| Row | Runs | RPS median (min-max) | p95 ms median (min-max) | p99 ms median (min-max) | Failed requests (sum) | Failed checks (sum) | Runs with a threshold breached |
 |---|---|---|---|---|---|---|---|"
 
-# table_begin <scenario title>; table_row appends to stdout and table.md
+# table_begin <scenario title> [header]; table_row appends to stdout and table.md
 emit() { printf '%s\n' "$1" | tee -a "$OUT/table.md"; }
 table_begin() {
   emit ""
   emit "### $1 ($RUNS runs, $(date -u +%Y-%m-%d), commit $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown))"
   emit ""
-  emit "$HEADER"
+  emit "${2:-$HEADER}"
 }
 # check_load <label>: logs the 1-minute load average; above BENCH_MAX_LOAD (default 4) it waits up to
 # BENCH_LOAD_WAIT seconds (default 60) for it to fall (a previous run's own load decays too), then goes on and says so.
@@ -246,9 +262,10 @@ bench_waiting_room() {
 
 bench_payments() {
   table_begin "payments (load/pay.js, script defaults 100 VUs, 20 s, compensation path; needs Redpanda)"
-  local lat r prefix
+  local lat r prefix inv
   # Inventory is needed for the seat confirm that fails (seats are not held), as in services/payments/RESULTS.md.
   start_service inventory 3101 SEED_SEATS=100000 PG_POOL=20
+  inv=$SVC_PID
   for lat in 100 0; do
     prefix="$OUT/payments-psp$lat"; rm -f "$prefix".run*
     for r in $(seq 1 "$RUNS"); do
@@ -263,6 +280,7 @@ bench_payments() {
     emit "$(row "PSP latency $lat ms" "$prefix")"
     cpu_emit "payments-psp$lat"
   done
+  stop_service "$inv" # port 3101 is needed again by the gateway scenario in `all`
 }
 
 bench_catalog() {
@@ -286,12 +304,118 @@ bench_catalog() {
   stop_service "$SVC_PID"
 }
 
+bench_gateway() {
+  table_begin "gateway (load/overhead.js, script defaults 50 VUs, 15 s, GET availability; IP limiter effectively off)"
+  local r prefix inv
+  start_service inventory 3101 SEED_SEATS=100000 PG_POOL=20
+  inv=$SVC_PID
+  prefix="$OUT/gateway-direct"; rm -f "$prefix".run*
+  for r in $(seq 1 "$RUNS"); do
+    check_load "gateway direct run $r"
+    echo "gateway direct to inventory run $r/$RUNS" >&2
+    BASE=http://localhost:3101 k6_run "$prefix.run$r" "$ROOT/services/gateway/load/overhead.js"
+  done
+  emit "$(row "direct to inventory" "$prefix")"
+  cpu_emit gateway-direct
+  # Waiting-room and payments are not started: the gateway only builds their URLs, and GET availability does not touch them.
+  flush_redis_db
+  PROBE_PORT=3106 start_service gateway 3100 OPS_PORT=3106 REDIS_URL="redis://localhost:56379/$REDIS_DB" IP_RATE=100000 IP_BURST=100000
+  prefix="$OUT/gateway-proxied"; rm -f "$prefix".run*
+  for r in $(seq 1 "$RUNS"); do
+    flush_redis_db
+    check_load "gateway proxied run $r"
+    echo "gateway through gateway run $r/$RUNS" >&2
+    BASE=http://localhost:3100 k6_run "$prefix.run$r" "$ROOT/services/gateway/load/overhead.js"
+  done
+  emit "$(row "through gateway" "$prefix")"
+  cpu_emit gateway-proxied
+  stop_service "$SVC_PID"
+  stop_service "$inv"
+  flush_redis_db # the limiter keys of the last run must not stay in the shared database
+}
+
+NOTIF_HEADER="| Partitions consumed at once | Runs | Seconds median (min-max) | Deliveries/s median (min-max) | Sent / expected (distinct per-run values) | Duplicate rows (sum) | Dead letters (distinct per-run values, 10 expected) | Provider calls (distinct per-run values) | Runs failing an integrity check |
+|---|---|---|---|---|---|---|---|---|"
+
+notifications_psql() {
+  if command -v psql >/dev/null; then psql -q "$DATABASE_URL" -c "$1" >/dev/null; return; fi
+  local c=${PG_CONTAINER:-$(container_for_port 55432)}
+  [ -n "$c" ] || { echo "notifications cleanup needs psql or a Postgres container (PG_CONTAINER)" >&2; return 1; }
+  docker exec "$c" psql -q -U lab -d lab -c "$1" >/dev/null
+}
+truncate_notifications() {
+  # The schema is created by the first migrate (bench.js runs it), so on a fresh database it does not exist yet.
+  notifications_psql "DO \$\$ BEGIN IF to_regclass('notifications.deliveries') IS NOT NULL THEN TRUNCATE notifications.deliveries; END IF; END \$\$"
+}
+# Also removes what an interrupted bench.js leaves (it deletes its own topics only on a normal end): topics payments-bench-* and groups g-<digits>.
+notifications_cleanup() {
+  NOTIF_DIRTY=0
+  truncate_notifications 2>/dev/null || echo "note: notifications.deliveries was NOT truncated" >&2
+  local c=${REDPANDA_CONTAINER:-$(container_for_port 59092)} t g
+  [ -n "$c" ] || return 0
+  for t in $(docker exec "$c" rpk topic list 2>/dev/null | awk '$1 ~ /^payments-bench-/ {print $1}'); do
+    docker exec "$c" rpk topic delete "$t" >/dev/null 2>&1 || true
+  done
+  for g in $(docker exec "$c" rpk group list 2>/dev/null | awk '$2 ~ /^g-[0-9]+$/ {print $2}'); do
+    docker exec "$c" rpk group delete "$g" >/dev/null 2>&1 || true
+  done
+}
+
+# notifications_row <label> <prefix>: Markdown row from the JSON lines of bench.js in <prefix>.run*.json
+notifications_row() {
+  node - "$1" "$2" <<'JS'
+const fs = require("fs"), path = require("path");
+const [label, prefix] = process.argv.slice(2);
+const dir = path.dirname(prefix), base = path.basename(prefix);
+const files = fs.readdirSync(dir).filter((f) => f.startsWith(base + ".run") && f.endsWith(".json")).sort();
+const runs = files.map((f) => ({ r: JSON.parse(fs.readFileSync(`${dir}/${f}`, "utf8")), rc: Number(fs.readFileSync(`${dir}/${f.replace(/\.json$/, ".rc")}`, "utf8")) }));
+const stat = (xs, d) => {
+  const s = [...xs].sort((a, b) => a - b), n = s.length;
+  const med = n % 2 ? s[(n - 1) / 2] : (s[n / 2 - 1] + s[n / 2]) / 2;
+  return `${med.toFixed(d)} (${s[0].toFixed(d)}-${s[n - 1].toFixed(d)})`;
+};
+const bad = runs.filter(({ r, rc }) => rc !== 0 || r.deliveries_sent !== r.deliveries_expected || r.duplicate_rows !== 0 || r.dlq_messages !== 10).length;
+const uniq = (xs) => [...new Set(xs)].join(", ");
+console.log(`| ${label} | ${runs.length} | ${stat(runs.map((x) => x.r.seconds), 1)} | ${stat(runs.map((x) => x.r.deliveries_per_s), 0)} | ${uniq(runs.map((x) => `${x.r.deliveries_sent}/${x.r.deliveries_expected}`))} | ${runs.reduce((a, x) => a + x.r.duplicate_rows, 0)} | ${uniq(runs.map((x) => x.r.dlq_messages))} | ${uniq(runs.map((x) => x.r.send_calls))} | ${bad}/${runs.length} |`);
+JS
+}
+
+bench_notifications() {
+  table_begin "notifications (load/bench.js, ${N:-20000} unique events + duplicates + 10 poison, ${SENDER_LATENCY_MS:-20} ms provider, CONCURRENCY ${CONCURRENCY:-25}; needs Redpanda)" "$NOTIF_HEADER"
+  local parts r prefix rc line
+  NOTIF_DIRTY=1
+  for parts in 1 3; do
+    prefix="$OUT/notifications-parts$parts"; rm -f "$prefix".run*
+    for r in $(seq 1 "$RUNS"); do
+      # bench.js creates its own topic (3 partitions) and group per run; the deliveries table must be empty or the previous run's rows would count.
+      truncate_notifications
+      check_load "notifications parts=$parts run $r"
+      echo "notifications parts=$parts run $r/$RUNS" >&2
+      rc=0
+      cpu_start "$prefix.run$r"
+      PARTS=$parts DATABASE_URL="$DATABASE_URL" node "$ROOT/services/notifications/load/bench.js" >"$prefix.run$r.out" 2>&1 || rc=$?
+      cpu_stop
+      echo "$rc" >"$prefix.run$r.rc"
+      # bench.js prints one JSON line starting with "events_produced" (kafkajs also logs JSON lines; "timeout at <n>" precedes it when the run did not finish).
+      line=$(grep '^{"events_produced"' "$prefix.run$r.out" | tail -n 1 || true)
+      if [ -z "$line" ]; then echo "bench.js produced no result (exit $rc):" >&2; tail -n 20 "$prefix.run$r.out" >&2; exit 1; fi
+      printf '%s\n' "$line" >"$prefix.run$r.json"
+      echo "$line" >&2
+    done
+    emit "$(notifications_row "$parts" "$prefix")"
+    cpu_emit "notifications-parts$parts"
+  done
+  notifications_cleanup
+}
+
 case "$SCENARIO" in
   inventory) bench_inventory ;;
   waiting-room) bench_waiting_room ;;
   payments) bench_payments ;;
   catalog) bench_catalog ;;
-  all) bench_inventory; bench_waiting_room; bench_payments; bench_catalog ;;
+  gateway) bench_gateway ;;
+  notifications) bench_notifications ;;
+  all) bench_inventory; bench_waiting_room; bench_payments; bench_catalog; bench_gateway; bench_notifications ;;
 esac
 echo >&2
 echo "raw summaries and table.md: $OUT" >&2

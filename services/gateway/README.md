@@ -61,6 +61,9 @@ Read and validated at start (`src/main.ts`); bad values exit with code 78. Start
 - Invalid configuration exits with code 78 and one message listing every problem ([Configuration and boot](../../docs/operations.md#configuration-and-boot)).
 - Runbooks for the drills that hit this service: [operations.md](../../docs/operations.md#runbooks).
 
+## Load
+`load/overhead.js` compares a direct call to inventory with the same call through the gateway; `scripts/bench.sh gateway [runs]` starts both services, raises the per-IP limit out of reach (`IP_RATE=100000 IP_BURST=100000`) and prints median, min and max ([benchmarks.md](../../docs/benchmarks.md#method)). By hand: start inventory (3101) and the gateway with a high `IP_RATE`/`IP_BURST`, then run the script with `BASE=http://localhost:3101` and `BASE=http://localhost:3100`.
+
 ## Tests
 `docker compose up -d redis && pnpm --filter @boxoffice/gateway test`. The tests import `@boxoffice/admission` through its built `dist/`: run `pnpm build` first.
 - `src/policy.test.ts`: every route (including `pay`) x token state x limiter state gives the documented status (fakes, no infrastructure); `gateway.test.ts` has the `pay` body, event, key and ordering rules.
