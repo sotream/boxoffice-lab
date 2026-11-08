@@ -20,4 +20,4 @@ First fixed state of the playbook: six services, capacity formulas, ADRs, and me
 - Measured: the ownership check costs 11.5% of payments throughput at a 0 ms PSP; request signing is inside the noise on the M4 Pro; a payments pool of 20 limits the 100 ms PSP case, and the 100 ms inversion disappears at pool 40 and 100.
 
 ### Known open items
-Listed in the README Limits and in [docs/benchmarks.md](docs/benchmarks.md): one unexplained `overload.e2e` failure on the M4 Pro (1 in 11 runs), the larger check cost at a 0 ms PSP with bigger pools, no tests for silent partitions of payments to Postgres, Redpanda and notifications, no TCP keepalive.
+Listed in [docs/open-items.md](docs/open-items.md), the README Limits and [docs/benchmarks.md](docs/benchmarks.md): one unexplained `overload.e2e` failure on the M4 Pro (1 in 11 runs), the larger check cost at a 0 ms PSP with bigger pools, no tests for silent partitions of payments to Postgres, Redpanda and notifications, no TCP keepalive.
