@@ -1,0 +1,91 @@
+# Full mutation run: node scripts/mutation-check.mjs
+# started 2026-11-08T10:51:19Z, commit 0c1c3c5, Node v26.13.0, MacBookAir10,1 (Apple M1), Postgres 18 + Redis 7 + Redpanda from docker-compose.yml, about 26 minutes wall time (other containers running on the same machine)
+
+
+mutation                     package                    result     secs  note
+--------------------------------------------------------------------------------------------------------------
+inv-hold-expiry-atomic       @boxoffice/inventory       KILLED     43.1  by expired holds become free again, model-based
+inv-hold-expiry-forupdate    @boxoffice/inventory       KILLED     27.4  by model-based
+inv-hold-allornothing        @boxoffice/inventory       KILLED     20.4  by is all-or-nothing for multi-seat holds, model-based
+inv-forupdate-allornothing   @boxoffice/inventory       KILLED     81.2  by model-based
+inv-forupdate-orderby        @boxoffice/inventory       KILLED     34.1  by lock ordering contract
+inv-confirm-allornothing     @boxoffice/inventory       KILLED     17.7  by confirm is all-or-nothing, model-based
+inv-confirm-expiry           @boxoffice/inventory       KILLED     33.5  by only the holder can confirm, and not after expiry, model-based
+inv-confirm-owner            @boxoffice/inventory       KILLED     34.3  by only the holder can confirm, model-based
+wr-zadd-nx                   @boxoffice/waiting-room    KILLED     9.8   by re-join is idempotent, queue model
+wr-pop-order                 @boxoffice/waiting-room    KILLED     11.4  by FIFO, queue model
+wr-admit-budget              @boxoffice/waiting-room    KILLED     10.1  by admits at most n, queue model
+wr-admit-ttl                 @boxoffice/waiting-room    KILLED     12.0  by status moves from waiting to admitted, queue model
+wr-join-admitted             @boxoffice/waiting-room    KILLED     9.5   by admitted user who re-joins, queue model
+wr-seq-clock                 @boxoffice/waiting-room    KILLED     9.4   by happens-before, FIFO
+gw-bucket-cap                @boxoffice/gateway         KILLED     9.3   by token bucket vs exact model, idle key refills
+gw-bucket-state              @boxoffice/gateway         KILLED     7.7   by token bucket, atomic
+gw-bucket-cost               @boxoffice/gateway         KILLED     9.3   by token bucket vs exact model, negligible refill
+gw-verify-skip               @boxoffice/gateway         KILLED     7.0   by policy, rejects
+gw-fail-flip                 @boxoffice/gateway         KILLED     8.2   by limiter down, policy
+gw-user-key                  @boxoffice/gateway         KILLED     9.4   by per-user keys
+adm-expiry                   @boxoffice/admission       KILLED     0.9   by expired tokens, expired
+adm-event                    @boxoffice/admission       KILLED     0.5   by another event
+adm-sig-skip                 @boxoffice/admission       KILLED     0.5   by equal-length wrong signatures, tamper
+adm-hex-canonical            @boxoffice/admission       KILLED     0.4   by single-character tamper, exhaustive
+cap-instances-ceil           @boxoffice/capacity        KILLED     0.6   by ceil with headroom
+cap-shards-ceil              @boxoffice/capacity        KILLED     0.6   by shardsNeeded
+cap-parse-zero               @boxoffice/capacity        KILLED     0.6   by bad input, parseNumber
+cat-jitter                   @boxoffice/catalog         KILLED     9.1   by jitter stays within
+cat-singleflight             @boxoffice/catalog         KILLED     15.6  by single-flight, thundering herd
+cat-ttl-written              @boxoffice/catalog         KILLED     12.7  by TTL really written
+cat-key-collision            @boxoffice/catalog         KILLED     12.1  by regression: city
+cat-nul-guard                @boxoffice/catalog         KILLED     7.8   by never a 5xx, raw percent-encoded
+not-dedup                    @boxoffice/notifications   KILLED     36.0  by dedup, delivered effects
+not-retry-budget             @boxoffice/notifications   KILLED     11.3  by documented retry budget, retries
+not-lease                    @boxoffice/notifications   KILLED     44.5  by fresh lease
+not-dlq-route                @boxoffice/notifications   KILLED     7.9   by poison message is published
+not-event-shape              @boxoffice/notifications   KILLED     19.2  by regression: valid JSON
+pay-stale-after-charge       @boxoffice/payments        KILLED     20.8  by a runner that loses PENDING -> CHARGED stops
+pay-sweeper-skips-refunding  @boxoffice/payments        KILLED     13.7  by REFUNDING
+pay-refund-key-unique        @boxoffice/payments        KILLED     14.1  by crash after refund
+pay-lost-cas-writes-event    @boxoffice/payments        KILLED     18.4  by lost compare-and-set
+pay-refunding-is-final       @boxoffice/payments        KILLED     29.1  by REFUNDING
+pay-trace-not-stored         @boxoffice/payments        KILLED     38.9  by keeps the original trace
+pay-relay-id-string          @boxoffice/payments        KILLED     21.0  by publishes outboxId as a JSON number
+gw-user-mismatch             @boxoffice/gateway         KILLED     16.1  by cannot hold or confirm seats as somebody else, cannot pay as somebody else
+inv-atomic-lock-order        @boxoffice/inventory       KILLED     40.2  by does not deadlock, invariant: no seat is held
+pay-confirm-4xx-refund       @boxoffice/payments        KILLED     16.5  by is a contract bug
+pay-sweep-swallows           @boxoffice/payments        KILLED     16.9  by reported, not swallowed
+pay-seats-validation         @boxoffice/payments        KILLED     17.7  by is a 400
+pay-seats-duplicates         @boxoffice/payments        KILLED     18.7  by is a 400, duplicate seat ids
+not-dlq-count-before-send    @boxoffice/notifications   KILLED     46.1  by counts messages that were published
+gw-method-405                @boxoffice/gateway         KILLED     9.5   by POST-only
+pay-int4-bound               @boxoffice/payments        KILLED     16.9  by is a 400
+pay-price-trust              @boxoffice/payments        KILLED     18.1  by rejects any other amountCents
+pay-price-from-client        @boxoffice/payments        KILLED     21.7  by the amount follows the number of seats
+pay-key-scope                @boxoffice/payments        KILLED     18.8  by a different event or a different seat set
+pay-key-global               @boxoffice/payments        KILLED     15.4  by two users with the same client key, cannot block another user's key
+gw-pay-event-binding         @boxoffice/gateway         KILLED     7.8   by the body eventId must be the path event
+pay-token-skip               @boxoffice/payments        KILLED     15.7  by a captured signature cannot be reused, a signature made with another secret
+pay-auth-body-ignored        @boxoffice/payments        KILLED     16.4  by right secret passes, the signature covers the path
+pay-auth-single-secret       @boxoffice/payments        KILLED     18.6  by during a rotation both the current and the previous secret
+pay-auth-body-cap-off        @boxoffice/payments        KILLED     16.6  by a body above the cap is refused
+gw-pay-token-header          @boxoffice/gateway         KILLED     7.9   by adds the internal credential, a signed request and the key reach payments
+gw-pay-sign-other-body       @boxoffice/gateway         KILLED     9.0   by adds the internal credential
+pay-verify-skip              @boxoffice/payments        KILLED     15.1  by seats not held by the payer: FAILED, nothing charged
+pay-verify-unknown-as-no     @boxoffice/payments        KILLED     16.1  by an unknown answer (timeout) does not fail the payment
+pay-verify-http-5xx-as-no    @boxoffice/payments        KILLED     17.6  by 5xx, a timeout and an unreachable inventory are unknown
+inv-verify-ignores-owner     @boxoffice/inventory       KILLED     22.5  by true only when the user holds every one of the seats now
+inv-verify-ignores-expiry    @boxoffice/inventory       KILLED     22.0  by an expired hold is not a hold
+inv-auth-skip                @boxoffice/inventory       KILLED     16.1  by a captured signature cannot be reused, during a rotation both the current and the previous key
+inv-auth-body-ignored        @boxoffice/inventory       KILLED     19.0  by signed requests work end to end
+inv-auth-single-secret       @boxoffice/inventory       KILLED     24.5  by during a rotation both the current and the previous key
+inv-auth-body-cap-off        @boxoffice/inventory       KILLED     24.7  by a body above the cap is refused
+gw-inv-not-signed            @boxoffice/gateway         KILLED     9.0   by holds, confirm and availability carry a valid signature, they carry inventory's own signature
+gw-inv-wrong-key             @boxoffice/gateway         KILLED     8.1   by the signature is made with inventory's key, not payments' key
+gw-inv-sign-other-body       @boxoffice/gateway         KILLED     7.5   by holds, confirm and availability carry a valid signature
+pay-confirm-not-signed       @boxoffice/payments        KILLED     16.2  by carry a signature over the exact method, path and body
+pay-verify-not-signed        @boxoffice/payments        KILLED     19.5  by carry a signature over the exact method, path and body
+pay-confirm-inventory-key-mixup @boxoffice/payments        KILLED     21.4  by carry a signature over the exact method, path and body
+wr-503-retry-after           @boxoffice/waiting-room    KILLED     12.5  by join and status answer 503 with Retry-After
+wr-503-mapping               @boxoffice/waiting-room    KILLED     11.9  by join and status answer 503 with Retry-After
+wr-timeout-not-recognised    @boxoffice/waiting-room    KILLED     10.4  by a queue call rejects after the command timeout
+
+82/82 killed; survivors: none
+exit 0
