@@ -3,7 +3,7 @@
 # prints a Markdown table of median, min and max per scenario row.
 #
 # Usage: scripts/bench.sh <scenario> [runs=3]
-#   scenario: inventory | waiting-room | payments | catalog | gateway | notifications | all
+#   scenario: inventory | waiting-room | payments | payments-verify | catalog | gateway | notifications | all
 # Needs: docker compose up -d (Postgres, Redis; Redpanda for payments and notifications), pnpm build, k6 (not for notifications), node, curl.
 # Env:
 #   BENCH_OUT        output directory for raw k6 summaries and table.md (default ./bench-out, gitignored)
@@ -27,6 +27,11 @@
 #   itself is still in the path (one Redis round trip per request), only its limit is out of reach. Both sides use the same signing key
 #   (INVENTORY_INTERNAL_TOKEN): overhead.js signs the direct request, the gateway signs its own forwarded request. The gateway's /readyz is on
 #   its ops port (3106), which is where the readiness wait looks.
+# payments-verify: the same pay.js with HELD=1 and the pre-charge ownership check ON (ADR 007, the production default): before each run the
+#   seats are held in SQL (VU n owns seats (n-1)*1000+1..n*1000, held by u-n, for an hour), so every payment passes the check, the saga ends
+#   CONFIRMED and the cost of the extra signed round trip to inventory (POST /events/1/holds/verify) is part of the number. Inventory is
+#   restarted per run (it re-seeds, sold seats from the last run would not be held again). Compare with the `payments` rows (VERIFY_HOLDS=0,
+#   compensation path, which also calls the PSP twice and refunds) only with that difference in mind: the two scenarios do different work.
 # notifications: load/bench.js is a single node process (producer, consumer and checks in one), not a k6 script and not a started service:
 #   it creates a fresh 3-partition topic, produces 21 010 events (1 000 duplicates, 10 poison), consumes them with PARTS=1 and PARTS=3
 #   partitions at once, and prints one JSON line with the integrity checks. Rows: one per PARTS value; the table shows time, deliveries/s,
@@ -38,8 +43,8 @@ set -euo pipefail
 
 SCENARIO=${1:-}
 RUNS=${2:-3}
-case "$SCENARIO" in inventory | waiting-room | payments | catalog | gateway | notifications | all) ;; *)
-  echo "usage: $0 <inventory|waiting-room|payments|catalog|gateway|notifications|all> [runs=3]" >&2; exit 2 ;; esac
+case "$SCENARIO" in inventory | waiting-room | payments | payments-verify | catalog | gateway | notifications | all) ;; *)
+  echo "usage: $0 <inventory|waiting-room|payments|payments-verify|catalog|gateway|notifications|all> [runs=3]" >&2; exit 2 ;; esac
 [[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "runs must be a positive integer" >&2; exit 2; }
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -100,6 +105,13 @@ flush_redis_db() {
     echo "note: no Redis container found (set REDIS_CONTAINER): Redis db $REDIS_DB is NOT flushed; repeated runs may see old keys" >&2
     FLUSH_WARNED=1
   fi
+}
+
+pg_exec() {
+  if command -v psql >/dev/null; then psql -q "$DATABASE_URL" -c "$1" >/dev/null; return; fi
+  local c=${PG_CONTAINER:-$(container_for_port 55432)}
+  [ -n "$c" ] || { echo "SQL needs psql or a Postgres container (PG_CONTAINER)" >&2; exit 1; }
+  docker exec "$c" psql -q -U lab -d lab -c "$1" >/dev/null
 }
 
 truncate_payments() {
@@ -284,6 +296,29 @@ bench_payments() {
   stop_service "$inv" # port 3101 is needed again by the gateway scenario in `all`
 }
 
+bench_payments_verify() {
+  table_begin "payments-verify (load/pay.js HELD=1, 100 VUs, 20 s, seats pre-held, ownership check on, CONFIRMED path; needs Redpanda)"
+  local lat r prefix inv
+  for lat in 100 0; do
+    prefix="$OUT/payments-verify-psp$lat"; rm -f "$prefix".run*
+    for r in $(seq 1 "$RUNS"); do
+      truncate_payments
+      start_service inventory 3101 SEED_SEATS=100000 PG_POOL=20 # re-seeds: all seats free again
+      inv=$SVC_PID
+      # 100 VUs x 1000 seats each; `hold_until` far away so nothing expires mid-run. event 1 is the one the seeder fills.
+      pg_exec "UPDATE seats SET status='held', held_by='u-' || ((seat_id - 1) / 1000 + 1), hold_until = now() + interval '1 hour' WHERE event_id=1 AND seat_id <= 100000"
+      start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL=20 VERIFY_HOLDS=1
+      check_load "payments-verify psp=${lat}ms run $r"
+      echo "payments-verify psp=${lat}ms run $r/$RUNS" >&2
+      HELD=1 k6_run "$prefix.run$r" "$ROOT/services/payments/load/pay.js"
+      stop_service "$SVC_PID"
+      stop_service "$inv"
+    done
+    emit "$(row "PSP latency $lat ms, ownership check on" "$prefix")"
+    cpu_emit "payments-verify-psp$lat"
+  done
+}
+
 bench_catalog() {
   table_begin "catalog (load/search.js, script defaults 50 VUs, 15 s, 200 000 events)"
   start_service catalog 3104 SEED_EVENTS="${SEED_EVENTS:-200000}" REDIS_URL="redis://localhost:56379/$REDIS_DB"
@@ -415,10 +450,11 @@ case "$SCENARIO" in
   inventory) bench_inventory ;;
   waiting-room) bench_waiting_room ;;
   payments) bench_payments ;;
+  payments-verify) bench_payments_verify ;;
   catalog) bench_catalog ;;
   gateway) bench_gateway ;;
   notifications) bench_notifications ;;
-  all) bench_inventory; bench_waiting_room; bench_payments; bench_catalog; bench_gateway; bench_notifications ;;
+  all) bench_inventory; bench_waiting_room; bench_payments; bench_payments_verify; bench_catalog; bench_gateway; bench_notifications ;;
 esac
 echo >&2
 echo "raw summaries and table.md: $OUT" >&2
