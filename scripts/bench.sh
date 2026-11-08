@@ -13,6 +13,7 @@
 #   DATABASE_URL     used with psql for the payments cleanup if psql exists (default postgres://lab:lab@localhost:55432/lab)
 #   BENCH_MAX_LOAD   1-minute load average above which a run waits (default 4, up to BENCH_LOAD_WAIT=60 s), then proceeds
 #   GATEWAY_BENCH_SEATS  seats seeded for the gateway scenario (default 5000; availability scans them all on every request)
+#   PAYMENTS_BENCH_POOL  PG_POOL of the payments service in the payments and payments-verify scenarios (default 20; the row label says if it is not)
 #   VUS, DURATION    passed through to k6 unchanged (the scripts' own defaults apply when unset)
 #   BENCH_CPU        1 = sample per-process CPU during each k6 run (default off): node, k6, postgres, redis-server and
 #                    the VM/container layer (macOS com.apple.Virtualization.VirtualMachine, Linux dockerd, containerd-shim),
@@ -292,7 +293,7 @@ bench_payments() {
     for r in $(seq 1 "$RUNS"); do
       # Idempotency keys repeat between runs: an unclean table would turn the run into cached replays.
       truncate_payments
-      start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL=20 VERIFY_HOLDS=0 # pay.js pays for seats nobody holds: with the pre-charge check (ADR 007) it would measure the cheap FAILED path, not the compensation path
+      start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL="${PAYMENTS_BENCH_POOL:-20}" VERIFY_HOLDS=0 # pay.js pays for seats nobody holds: with the pre-charge check (ADR 007) it would measure the cheap FAILED path, not the compensation path
       check_load "payments psp=${lat}ms run $r"
       echo "payments psp=${lat}ms run $r/$RUNS" >&2
       k6_run "$prefix.run$r" "$ROOT/services/payments/load/pay.js"
@@ -321,7 +322,7 @@ bench_payments_verify() {
         inv=$SVC_PID
         # 100 VUs x 1000 seats each; `hold_until` far away so nothing expires mid-run. event 1 is the one the seeder fills.
         pg_exec "UPDATE seats SET status='held', held_by='u-' || ((seat_id - 1) / 1000 + 1), hold_until = now() + interval '1 hour' WHERE event_id=1 AND seat_id <= 100000"
-        start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL=20 VERIFY_HOLDS="$mode"
+        start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL="${PAYMENTS_BENCH_POOL:-20}" VERIFY_HOLDS="$mode"
         check_load "payments-verify psp=${lat}ms $label run $r"
         echo "payments-verify psp=${lat}ms $label run $r/$RUNS" >&2
         HELD=1 k6_run "$prefix.run$r" "$ROOT/services/payments/load/pay.js"
@@ -333,7 +334,7 @@ bench_payments_verify() {
     done
     for mode in 1 0; do
       label="ownership check $([ "$mode" = 1 ] && echo on || echo off)"
-      emit "$(row "PSP latency $lat ms, $label" "$OUT/payments-verify$mode-psp$lat")"
+      emit "$(row "PSP latency $lat ms, $label$([ "${PAYMENTS_BENCH_POOL:-20}" = 20 ] || echo ", pool ${PAYMENTS_BENCH_POOL}")" "$OUT/payments-verify$mode-psp$lat")"
       cpu_emit "payments-verify$mode-psp$lat"
     done
   done
