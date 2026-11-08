@@ -27,11 +27,13 @@
 #   itself is still in the path (one Redis round trip per request), only its limit is out of reach. Both sides use the same signing key
 #   (INVENTORY_INTERNAL_TOKEN): overhead.js signs the direct request, the gateway signs its own forwarded request. The gateway's /readyz is on
 #   its ops port (3106), which is where the readiness wait looks.
-# payments-verify: the same pay.js with HELD=1 and the pre-charge ownership check ON (ADR 007, the production default): before each run the
+# payments-verify: the same pay.js with HELD=1, run with the pre-charge ownership check ON (ADR 007, the production default) and OFF
+#   (VERIFY_HOLDS=0, allowed outside production), at PSP 100 and 0 ms: before each run the
 #   seats are held in SQL (VU n owns seats (n-1)*1000+1..n*1000, held by u-n, for an hour), so every payment passes the check, the saga ends
 #   CONFIRMED and the cost of the extra signed round trip to inventory (POST /events/1/holds/verify) is part of the number. Inventory is
-#   restarted per run (it re-seeds, sold seats from the last run would not be held again). Compare with the `payments` rows (VERIFY_HOLDS=0,
-#   compensation path, which also calls the PSP twice and refunds) only with that difference in mind: the two scenarios do different work.
+#   restarted per run (it re-seeds, sold seats from the last run would not be held again). The on and off rows do the same work and
+#   differ only by the signed round trip to inventory, so their difference is the cost of the check. The `payments` rows (compensation path,
+#   which also calls the PSP twice and refunds) do different work and are not a baseline for them.
 # notifications: load/bench.js is a single node process (producer, consumer and checks in one), not a k6 script and not a started service:
 #   it creates a fresh 3-partition topic, produces 21 010 events (1 000 duplicates, 10 poison), consumes them with PARTS=1 and PARTS=3
 #   partitions at once, and prints one JSON line with the integrity checks. Rows: one per PARTS value; the table shows time, deliveries/s,
@@ -297,25 +299,29 @@ bench_payments() {
 }
 
 bench_payments_verify() {
-  table_begin "payments-verify (load/pay.js HELD=1, 100 VUs, 20 s, seats pre-held, ownership check on, CONFIRMED path; needs Redpanda)"
-  local lat r prefix inv
+  table_begin "payments-verify (load/pay.js HELD=1, 100 VUs, 20 s, seats pre-held, CONFIRMED path, ownership check on and off; needs Redpanda)"
+  local lat mode r prefix inv label
   for lat in 100 0; do
-    prefix="$OUT/payments-verify-psp$lat"; rm -f "$prefix".run*
-    for r in $(seq 1 "$RUNS"); do
-      truncate_payments
-      start_service inventory 3101 SEED_SEATS=100000 PG_POOL=20 # re-seeds: all seats free again
-      inv=$SVC_PID
-      # 100 VUs x 1000 seats each; `hold_until` far away so nothing expires mid-run. event 1 is the one the seeder fills.
-      pg_exec "UPDATE seats SET status='held', held_by='u-' || ((seat_id - 1) / 1000 + 1), hold_until = now() + interval '1 hour' WHERE event_id=1 AND seat_id <= 100000"
-      start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL=20 VERIFY_HOLDS=1
-      check_load "payments-verify psp=${lat}ms run $r"
-      echo "payments-verify psp=${lat}ms run $r/$RUNS" >&2
-      HELD=1 k6_run "$prefix.run$r" "$ROOT/services/payments/load/pay.js"
-      stop_service "$SVC_PID"
-      stop_service "$inv"
+    # Same work in both modes (seats held, CONFIRMED, one PSP call); only the signed POST /holds/verify to inventory differs.
+    for mode in 1 0; do
+      label="ownership check $([ "$mode" = 1 ] && echo on || echo off)"
+      prefix="$OUT/payments-verify$mode-psp$lat"; rm -f "$prefix".run*
+      for r in $(seq 1 "$RUNS"); do
+        truncate_payments
+        start_service inventory 3101 SEED_SEATS=100000 PG_POOL=20 # re-seeds: all seats free again
+        inv=$SVC_PID
+        # 100 VUs x 1000 seats each; `hold_until` far away so nothing expires mid-run. event 1 is the one the seeder fills.
+        pg_exec "UPDATE seats SET status='held', held_by='u-' || ((seat_id - 1) / 1000 + 1), hold_until = now() + interval '1 hour' WHERE event_id=1 AND seat_id <= 100000"
+        start_service payments 3103 PSP_LATENCY_MS="$lat" PG_POOL=20 VERIFY_HOLDS="$mode"
+        check_load "payments-verify psp=${lat}ms $label run $r"
+        echo "payments-verify psp=${lat}ms $label run $r/$RUNS" >&2
+        HELD=1 k6_run "$prefix.run$r" "$ROOT/services/payments/load/pay.js"
+        stop_service "$SVC_PID"
+        stop_service "$inv"
+      done
+      emit "$(row "PSP latency $lat ms, $label" "$prefix")"
+      cpu_emit "payments-verify$mode-psp$lat"
     done
-    emit "$(row "PSP latency $lat ms, ownership check on" "$prefix")"
-    cpu_emit "payments-verify-psp$lat"
   done
 }
 
