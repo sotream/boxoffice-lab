@@ -39,7 +39,7 @@ services:
   # Start with: docker compose --profile observability up -d prometheus grafana   (services run on the host, see ops/prometheus.yml)
   prometheus:
     profiles: ["observability"]
-    image: prom/prometheus:v3.15.1
+    image: prom/prometheus:v3.16.0
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=15d"]
     volumes:
       - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
