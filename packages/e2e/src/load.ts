@@ -85,7 +85,13 @@ export async function runLoad(cfg: LoadConfig, runId: string): Promise<LoadResul
       let body: any = null;
       try { body = await res.json(); } catch { /* not json */ }
       return { status: res.status, body, retryAfter: ra };
-    } catch { bump(`${tag}:neterr`); return null; }
+    } catch (e) {
+      bump(`${tag}:neterr`);
+      // why and where, so a nightly failure with thousands of network errors can be read from the log (the key does not end in ":neterr", so the serverErrors filters ignore it)
+      const cause = (e as { cause?: { code?: string } }).cause?.code ?? (e as Error).name;
+      bump(`neterr-cause:${cause}@${new URL(url).port}`);
+      return null;
+    }
   };
   const json = (rid: string, extra: Record<string, string> = {}) => ({ "content-type": "application/json", "x-request-id": rid, ...extra });
 
