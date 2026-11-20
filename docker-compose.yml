@@ -19,7 +19,7 @@ services:
       interval: 2s
       retries: 20
   redpanda:
-    image: redpandadata/redpanda:v26.2.6
+    image: redpandadata/redpanda:v26.2.7
     command:
       - redpanda
       - start
