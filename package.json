@@ -15,8 +15,8 @@
     "test:e2e:faults": "pnpm --filter @boxoffice/e2e test:faults"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^5.1.0",
-    "fast-check": "^4.10.2",
+    "@vitest/coverage-v8": "^5.1.1",
+    "fast-check": "^4.11.0",
     "yaml": "^2.9.1"
   }
 }
